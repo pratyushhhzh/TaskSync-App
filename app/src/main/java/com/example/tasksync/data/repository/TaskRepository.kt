@@ -73,6 +73,16 @@ class TaskRepository(
         taskDao.getTaskById(taskId)?.let(::scheduleReminder)
     }
 
+    suspend fun setTaskStatus(taskId: String, status: String) {
+        val current = taskDao.getTaskById(taskId) ?: return
+        if (status == "completed" && current.status != "completed") {
+            markTaskCompleted(taskId)
+        } else {
+            taskDao.updateTaskStatus(taskId, status, System.currentTimeMillis())
+            taskDao.getTaskById(taskId)?.let(::scheduleReminder)
+        }
+    }
+
     suspend fun deleteTask(task: TaskEntity) {
         taskDao.deleteTask(task)
         TaskReminderScheduler.cancel(appContext, task.id)

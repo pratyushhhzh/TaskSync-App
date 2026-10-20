@@ -8,5 +8,6 @@ data class ProjectEntity(
     @PrimaryKey val id: String,
     val name: String,
     val description: String? = null,
+    val deadlineDate: String? = null,
     val createdAt: Long = System.currentTimeMillis()
 )

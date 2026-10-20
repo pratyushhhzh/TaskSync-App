@@ -92,15 +92,19 @@ class TaskListViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun moveTaskToStatus(task: TaskEntity, status: String) {
+        viewModelScope.launch { repository.setTaskStatus(task.id, status) }
+    }
+
     fun deleteTask(task: TaskEntity) {
         viewModelScope.launch {
             repository.deleteTask(task)
         }
     }
 
-    fun createProject(name: String, description: String? = null) {
+    fun createProject(name: String, description: String? = null, deadlineDate: String? = null) {
         if (name.isBlank()) return
-        viewModelScope.launch { projectRepository.createProject(name, description) }
+        viewModelScope.launch { projectRepository.createProject(name, description, deadlineDate) }
     }
 
     fun deleteProject(project: ProjectEntity) {

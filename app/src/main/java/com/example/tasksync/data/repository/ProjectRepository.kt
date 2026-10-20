@@ -11,12 +11,13 @@ class ProjectRepository(
 ) {
     val projects: Flow<List<ProjectEntity>> = projectDao.observeProjects()
 
-    suspend fun createProject(name: String, description: String?) {
+    suspend fun createProject(name: String, description: String?, deadlineDate: String?) {
         projectDao.insertProject(
             ProjectEntity(
                 id = "project_${System.currentTimeMillis()}_${(1000..9999).random()}",
                 name = name.trim(),
-                description = description?.trim()?.ifBlank { null }
+                description = description?.trim()?.ifBlank { null },
+                deadlineDate = deadlineDate
             )
         )
     }

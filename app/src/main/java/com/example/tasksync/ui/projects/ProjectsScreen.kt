@@ -12,19 +12,19 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material.icons.filled.Event
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -39,7 +39,6 @@ import com.example.tasksync.data.local.entity.ProjectEntity
 import com.example.tasksync.data.local.entity.TaskEntity
 import com.example.tasksync.ui.tasks.TaskDetailBottomSheet
 import com.example.tasksync.ui.tasks.TaskListViewModel
-import com.example.tasksync.ui.tasks.components.TaskItemCard
 
 @Composable
 fun ProjectsScreen(viewModel: TaskListViewModel = viewModel()) {
@@ -63,60 +62,119 @@ fun ProjectsScreen(viewModel: TaskListViewModel = viewModel()) {
                 if (selectedProject == null) showProjectDialog = true
                 else { selectedTask = null; showTaskSheet = true }
             }) {
-                Icon(Icons.Default.Add, contentDescription = if (selectedProject == null) "Add project" else "Add task")
+                Icon(Icons.Default.Add, contentDescription = if (selectedProject == null) "Create project" else "Add project task")
             }
         }
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
-            selectedProject?.let { project ->
-                Row(
-                    modifier = Modifier.fillMaxWidth().clickable { selectedProject = null }.padding(bottom = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "All projects")
-                    Text("  All projects", style = MaterialTheme.typography.labelLarge)
+        if (selectedProject == null) {
+            ProjectList(
+                projects = projects,
+                modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
+                onSelect = { selectedProject = it }
+            )
+        } else {
+            ProjectBoardHeader(
+                project = selectedProject!!,
+                tasks = projectTasks,
+                onBack = { selectedProject = null },
+                modifier = Modifier.fillMaxSize().padding(padding)
+            ) {
+                ProjectKanbanBoard(
+                    tasks = projectTasks,
+                    onTaskClick = { selectedTask = it; showTaskSheet = true },
+                    onMoveTask = viewModel::moveTaskToStatus,
+                    onAddTask = { selectedTask = null; showTaskSheet = true },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+
+        if (showProjectDialog) {
+            ProjectCreationDialog(
+                onDismiss = { showProjectDialog = false },
+                onCreate = { name, description, deadline ->
+                    viewModel.createProject(name, description, deadline)
+                    showProjectDialog = false
                 }
-                Text(project.name, style = MaterialTheme.typography.headlineSmall)
-                project.description?.takeIf(String::isNotBlank)?.let {
-                    Spacer(Modifier.height(4.dp))
-                    Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            )
+        }
+
+        if (showTaskSheet) {
+            TaskDetailBottomSheet(
+                task = selectedTask,
+                projects = projects,
+                subtasks = subtasks,
+                initialProjectId = selectedProject?.id,
+                onDismissRequest = { showTaskSheet = false },
+                onSaveTask = { title, description, date, time, priority, projectId, reminderEnabled, recurrenceRule ->
+                    val task = selectedTask
+                    if (task == null) {
+                        viewModel.createTask(
+                            title = title,
+                            description = description,
+                            status = "inbox",
+                            dueDate = date,
+                            dueTime = time,
+                            reminderEnabled = reminderEnabled,
+                            recurrenceRule = recurrenceRule,
+                            priority = priority,
+                            projectId = projectId
+                        )
+                    } else {
+                        viewModel.updateTask(task.copy(
+                            title = title,
+                            description = description,
+                            dueDate = date,
+                            dueTime = time,
+                            reminderEnabled = reminderEnabled,
+                            recurrenceRule = recurrenceRule,
+                            priority = priority,
+                            projectId = projectId
+                        ))
+                    }
+                },
+                onDeleteTask = { viewModel.deleteTask(it); showTaskSheet = false },
+                onAddSubtask = { title -> selectedTask?.let { viewModel.addSubtask(it.id, title) } },
+                onToggleSubtask = viewModel::toggleSubtask,
+                onDeleteSubtask = viewModel::deleteSubtask
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProjectList(projects: List<ProjectEntity>, modifier: Modifier, onSelect: (ProjectEntity) -> Unit) {
+    Column(modifier) {
+        Text("Projects", style = MaterialTheme.typography.headlineSmall)
+        Text("A focused board for every goal.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(16.dp))
+        if (projects.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Start a project", style = MaterialTheme.typography.titleLarge)
+                    Spacer(Modifier.height(5.dp))
+                    Text("Add a description and target date, then organize its work on a Kanban board.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                Spacer(Modifier.height(12.dp))
-                if (projectTasks.isEmpty()) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("No tasks in this project yet. Tap + to add one.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                } else {
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        items(projectTasks, key = { it.id }) { task ->
-                            TaskItemCard(
-                                task = task,
-                                onTaskClick = { selectedTask = it; showTaskSheet = true },
-                                onStatusChange = viewModel::toggleTaskCompletion
-                            )
-                        }
-                    }
-                }
-            } ?: run {
-                Text("Projects", style = MaterialTheme.typography.headlineSmall)
-                Spacer(Modifier.height(12.dp))
-                if (projects.isEmpty()) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("Create a project to group related tasks.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                } else {
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(projects, key = { it.id }) { project ->
-                            Card(
-                                modifier = Modifier.fillMaxWidth().clickable { selectedProject = project },
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-                            ) {
-                                Column(Modifier.padding(16.dp)) {
-                                    Text(project.name, style = MaterialTheme.typography.titleMedium)
-                                    project.description?.takeIf(String::isNotBlank)?.let {
-                                        Spacer(Modifier.height(4.dp))
-                                        Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    }
+            }
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(projects, key = { it.id }) { project ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth().clickable { onSelect(project) },
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                    ) {
+                        Column(Modifier.padding(16.dp)) {
+                            Text(project.name, style = MaterialTheme.typography.titleMedium)
+                            project.description?.takeIf(String::isNotBlank)?.let {
+                                Spacer(Modifier.height(4.dp))
+                                Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            project.deadlineDate?.let {
+                                Spacer(Modifier.height(10.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Event, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                    Text("  Target · $it", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                                 }
                             }
                         }
@@ -124,60 +182,51 @@ fun ProjectsScreen(viewModel: TaskListViewModel = viewModel()) {
                 }
             }
         }
+    }
+}
 
-        if (showProjectDialog) {
-            var name by remember { mutableStateOf("") }
-            var description by remember { mutableStateOf("") }
-            AlertDialog(
-                onDismissRequest = { showProjectDialog = false },
-                title = { Text("New project") },
-                text = {
-                    Column {
-                        OutlinedTextField(name, { name = it }, label = { Text("Project name") }, singleLine = true)
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(description, { description = it }, label = { Text("Description (optional)") })
-                    }
-                },
-                confirmButton = {
-                    TextButton(onClick = {
-                        viewModel.createProject(name, description)
-                        showProjectDialog = false
-                    }, enabled = name.isNotBlank()) { Text("Create") }
-                },
-                dismissButton = { TextButton(onClick = { showProjectDialog = false }) { Text("Cancel") } }
-            )
+@Composable
+private fun ProjectBoardHeader(
+    project: ProjectEntity,
+    tasks: List<TaskEntity>,
+    onBack: () -> Unit,
+    modifier: Modifier,
+    board: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit
+) {
+    Column(modifier) {
+        Row(
+            modifier = Modifier.fillMaxWidth().clickable(onClick = onBack).padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "All projects")
+            Text("  All projects", style = MaterialTheme.typography.labelLarge)
         }
-
-        if (showTaskSheet) {
-            val project = selectedProject
-            TaskDetailBottomSheet(
-                task = selectedTask,
-                projects = projects,
-                subtasks = subtasks,
-                initialProjectId = project?.id,
-                onDismissRequest = { showTaskSheet = false },
-                onSaveTask = { title, description, date, time, priority, projectIdFromEditor, reminderEnabled, recurrenceRule ->
-                    if (selectedTask == null) {
-                        viewModel.createTask(
-                            title = title, description = description,
-                            status = "inbox",
-                            dueDate = date, dueTime = time, reminderEnabled = reminderEnabled,
-                            recurrenceRule = recurrenceRule, priority = priority,
-                            projectId = projectIdFromEditor
-                        )
-                    } else {
-                        viewModel.updateTask(selectedTask!!.copy(
-                            title = title, description = description, dueDate = date,
-                            dueTime = time, reminderEnabled = reminderEnabled,
-                            recurrenceRule = recurrenceRule, priority = priority, projectId = projectIdFromEditor
-                        ))
+        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.Top) {
+            Column(Modifier.weight(1f)) {
+                Text(project.name, style = MaterialTheme.typography.headlineSmall)
+                project.description?.takeIf(String::isNotBlank)?.let {
+                    Spacer(Modifier.height(4.dp))
+                    Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            project.deadlineDate?.let { date ->
+                Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.primaryContainer) {
+                    Row(Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Event, contentDescription = null)
+                        Text(date, modifier = Modifier.padding(start = 5.dp), style = MaterialTheme.typography.labelMedium)
                     }
-                },
-                onDeleteTask = { viewModel.deleteTask(it); showTaskSheet = false },
-                onAddSubtask = { selectedTask?.let { task -> viewModel.addSubtask(task.id, it) } },
-                onToggleSubtask = viewModel::toggleSubtask,
-                onDeleteSubtask = viewModel::deleteSubtask
-            )
+                }
+            }
         }
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("PROJECT BOARD", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("${tasks.count { it.status != "completed" }} active · ${tasks.count { it.status == "completed" }} done", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        board()
     }
 }
