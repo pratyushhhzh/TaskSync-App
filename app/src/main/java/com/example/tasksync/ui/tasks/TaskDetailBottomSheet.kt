@@ -1,13 +1,19 @@
 package com.example.tasksync.ui.tasks
 
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
@@ -15,6 +21,8 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -23,103 +31,214 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.example.tasksync.data.local.entity.ProjectEntity
+import com.example.tasksync.data.local.entity.SubtaskEntity
 import com.example.tasksync.data.local.entity.TaskEntity
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneOffset
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TaskDetailBottomSheet(
     task: TaskEntity?,
+    projects: List<ProjectEntity> = emptyList(),
+    subtasks: List<SubtaskEntity> = emptyList(),
+    initialProjectId: String? = null,
+    initialDueDate: String? = null,
     onDismissRequest: () -> Unit,
-    onSaveTask: (String, String?, String?, Int) -> Unit,
+    onSaveTask: (String, String?, String?, String?, Int, String?) -> Unit,
+    onAddSubtask: (String) -> Unit = {},
+    onToggleSubtask: (SubtaskEntity, Boolean) -> Unit = { _, _ -> },
+    onDeleteSubtask: (SubtaskEntity) -> Unit = {},
     onDeleteTask: ((TaskEntity) -> Unit)? = null
 ) {
-    if (task == null && onDeleteTask != null) return
-
     var title by remember(task) { mutableStateOf(task?.title ?: "") }
     var description by remember(task) { mutableStateOf(task?.description ?: "") }
-    var dueDate by remember(task) { mutableStateOf(task?.dueDate ?: "") }
+    var dueDate by remember(task, initialDueDate) {
+        mutableStateOf(task?.dueDate?.takeIf { it.isIsoDate() } ?: initialDueDate.orEmpty())
+    }
+    var dueTime by remember(task) { mutableStateOf(task?.dueTime.orEmpty()) }
     var priority by remember(task) { mutableIntStateOf(task?.priority ?: 4) }
+    var projectId by remember(task, initialProjectId) { mutableStateOf(task?.projectId ?: initialProjectId) }
+    var showDatePicker by remember { mutableStateOf(false) }
+    var newSubtaskTitle by remember { mutableStateOf("") }
+    var validationMessage by remember { mutableStateOf<String?>(null) }
+
+    val pickerState = rememberDatePickerState(initialSelectedDateMillis = dueDate.toEpochMillisOrNull())
 
     ModalBottomSheet(onDismissRequest = onDismissRequest) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(24.dp)
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 24.dp)
         ) {
             Text(
-                text = if (task == null) "Create Task" else "Task Details",
+                text = if (task == null) "Create task" else "Edit task",
                 style = MaterialTheme.typography.titleLarge
             )
-
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(Modifier.height(16.dp))
 
             OutlinedTextField(
                 value = title,
-                onValueChange = { title = it },
-                label = { Text("Task Title") },
+                onValueChange = { title = it; validationMessage = null },
+                label = { Text("Task title") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
+            Spacer(Modifier.height(12.dp))
             OutlinedTextField(
                 value = description,
                 onValueChange = { description = it },
-                label = { Text("Description / Notes") },
+                label = { Text("Notes (optional)") },
+                minLines = 2,
                 modifier = Modifier.fillMaxWidth()
             )
 
-            Spacer(modifier = Modifier.height(12.dp))
-
+            Spacer(Modifier.height(16.dp))
+            Text("Deadline", style = MaterialTheme.typography.labelLarge)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(onClick = { showDatePicker = true }) {
+                    Text(dueDate.ifBlank { "Choose date" })
+                }
+                if (dueDate.isNotBlank()) {
+                    TextButton(onClick = { dueDate = ""; dueTime = "" }) { Text("Clear") }
+                }
+            }
             OutlinedTextField(
-                value = dueDate,
-                onValueChange = { dueDate = it },
-                label = { Text("Due Date (YYYY-MM-DD)") },
+                value = dueTime,
+                onValueChange = { dueTime = it.take(5); validationMessage = null },
+                label = { Text("Time (optional, HH:mm)") },
+                placeholder = { Text("17:30") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Text("Priority:", style = MaterialTheme.typography.bodyMedium)
-            Row(modifier = Modifier.fillMaxWidth()) {
-                listOf(1 to "P1 High", 2 to "P2 Med", 3 to "P3 Low", 4 to "P4 None").forEach { (p, label) ->
+            Spacer(Modifier.height(16.dp))
+            Text("Priority", style = MaterialTheme.typography.labelLarge)
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                listOf(1 to "High", 2 to "Medium", 3 to "Low", 4 to "None").forEach { (value, label) ->
                     FilterChip(
-                        selected = priority == p,
-                        onClick = { priority = p },
-                        label = { Text(label) },
-                        modifier = Modifier.padding(end = 6.dp)
+                        selected = priority == value,
+                        onClick = { priority = value },
+                        label = { Text("P$value $label") }
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            if (projects.isNotEmpty()) {
+                Spacer(Modifier.height(16.dp))
+                Text("Project", style = MaterialTheme.typography.labelLarge)
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    FilterChip(
+                        selected = projectId == null,
+                        onClick = { projectId = null },
+                        label = { Text("No project") }
+                    )
+                    projects.forEach { project ->
+                        FilterChip(
+                            selected = projectId == project.id,
+                            onClick = { projectId = project.id },
+                            label = { Text(project.name) }
+                        )
+                    }
+                }
+            }
 
-            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            if (task != null) {
+                Spacer(Modifier.height(18.dp))
+                Text("Subtasks", style = MaterialTheme.typography.labelLarge)
+                subtasks.forEach { subtask ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = subtask.isCompleted,
+                            onCheckedChange = { onToggleSubtask(subtask, it) }
+                        )
+                        Text(subtask.title, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { onDeleteSubtask(subtask) }) { Text("Remove") }
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = newSubtaskTitle,
+                        onValueChange = { newSubtaskTitle = it },
+                        label = { Text("Add a subtask") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(
+                        onClick = {
+                            onAddSubtask(newSubtaskTitle)
+                            newSubtaskTitle = ""
+                        },
+                        enabled = newSubtaskTitle.isNotBlank()
+                    ) { Text("Add") }
+                }
+            }
+
+            validationMessage?.let {
+                Spacer(Modifier.height(8.dp))
+                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+            Spacer(Modifier.height(20.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (task != null && onDeleteTask != null) {
                     OutlinedButton(
                         onClick = { onDeleteTask(task) },
                         modifier = Modifier.weight(1f)
-                    ) {
-                        Text("Delete", color = MaterialTheme.colorScheme.error)
-                    }
-                    Spacer(modifier = Modifier.width(12.dp))
+                    ) { Text("Delete") }
                 }
-
                 Button(
                     onClick = {
-                        if (title.isNotBlank()) {
-                            onSaveTask(title, description.ifBlank { null }, dueDate.ifBlank { null }, priority)
-                            onDismissRequest()
+                        when {
+                            title.isBlank() -> validationMessage = "Enter a task title."
+                            dueTime.isNotBlank() && !dueTime.matches(Regex("([01]\\d|2[0-3]):[0-5]\\d")) ->
+                                validationMessage = "Enter time as HH:mm, for example 17:30."
+                            else -> {
+                                onSaveTask(
+                                    title.trim(), description.ifBlank { null }, dueDate.ifBlank { null },
+                                    dueTime.ifBlank { null }, priority, projectId
+                                )
+                                onDismissRequest()
+                            }
                         }
                     },
                     modifier = Modifier.weight(1f)
-                ) {
-                    Text("Save Task")
-                }
+                ) { Text("Save task") }
             }
         }
     }
+
+    if (showDatePicker) {
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    dueDate = pickerState.selectedDateMillis?.let {
+                        Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate().toString()
+                    }.orEmpty()
+                    showDatePicker = false
+                }) { Text("Set date") }
+            },
+            dismissButton = { TextButton(onClick = { showDatePicker = false }) { Text("Cancel") } }
+        ) {
+            DatePicker(state = pickerState)
+        }
+    }
 }
+
+private fun String.isIsoDate(): Boolean = runCatching { LocalDate.parse(this) }.isSuccess
+
+private fun String.toEpochMillisOrNull(): Long? = runCatching {
+    LocalDate.parse(this).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
+}.getOrNull()

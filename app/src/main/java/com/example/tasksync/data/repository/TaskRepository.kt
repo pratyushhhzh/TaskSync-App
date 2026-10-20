@@ -7,13 +7,17 @@ import kotlinx.coroutines.flow.Flow
 class TaskRepository(
     private val taskDao: TaskDao
 ) {
-    val todayTasks: Flow<List<TaskEntity>> = taskDao.getTodayTasks()
+    val allTasks: Flow<List<TaskEntity>> = taskDao.getAllTasks()
     val inboxTasks: Flow<List<TaskEntity>> = taskDao.getInboxTasks()
-    val upcomingTasks: Flow<List<TaskEntity>> = taskDao.getUpcomingTasks()
-    val completedTasks: Flow<List<TaskEntity>> = taskDao.getCompletedTasks()
 
     suspend fun getTaskById(id: String): TaskEntity? {
         return taskDao.getTaskById(id)
+    }
+
+    fun getTasksForProject(projectId: String): Flow<List<TaskEntity>> = taskDao.getTasksForProject(projectId)
+
+    suspend fun removeProjectFromTasks(projectId: String) {
+        taskDao.removeProjectFromTasks(projectId, System.currentTimeMillis())
     }
 
     suspend fun createTask(

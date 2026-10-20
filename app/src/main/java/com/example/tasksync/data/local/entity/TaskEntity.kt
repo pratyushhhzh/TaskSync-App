@@ -12,7 +12,7 @@ data class TaskEntity(
     val sectionId: String? = null,
     val title: String,
     val description: String? = null,
-    val status: String = "inbox", // inbox, today, upcoming, completed
+    val status: String = "inbox", // inbox or completed
     val dueDate: String? = null, // YYYY-MM-DD
     val dueTime: String? = null, // HH:MM:SS
     val priority: Int = 4, // 1 (High) to 4 (None)

@@ -5,7 +5,12 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.tasksync.data.local.AppDatabase
 import com.example.tasksync.data.local.entity.TaskEntity
+import com.example.tasksync.data.local.entity.ProjectEntity
+import com.example.tasksync.data.local.entity.SubtaskEntity
+import com.example.tasksync.data.repository.ProjectRepository
 import com.example.tasksync.data.repository.TaskRepository
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
@@ -14,17 +19,19 @@ import kotlinx.coroutines.launch
 class TaskListViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository: TaskRepository
+    private val projectRepository: ProjectRepository
 
-    val todayTasks: StateFlow<List<TaskEntity>>
+    val allTasks: StateFlow<List<TaskEntity>>
     val inboxTasks: StateFlow<List<TaskEntity>>
-    val upcomingTasks: StateFlow<List<TaskEntity>>
-    val completedTasks: StateFlow<List<TaskEntity>>
+    val projects: StateFlow<List<ProjectEntity>>
 
     init {
         val taskDao = AppDatabase.getDatabase(application).taskDao()
+        val database = AppDatabase.getDatabase(application)
         repository = TaskRepository(taskDao)
+        projectRepository = ProjectRepository(database.projectDao(), taskDao)
 
-        todayTasks = repository.todayTasks.stateIn(
+        allTasks = repository.allTasks.stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = emptyList()
@@ -36,13 +43,7 @@ class TaskListViewModel(application: Application) : AndroidViewModel(application
             initialValue = emptyList()
         )
 
-        upcomingTasks = repository.upcomingTasks.stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000),
-            initialValue = emptyList()
-        )
-
-        completedTasks = repository.completedTasks.stateIn(
+        projects = projectRepository.projects.stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = emptyList()
@@ -82,7 +83,7 @@ class TaskListViewModel(application: Application) : AndroidViewModel(application
             if (isCompleted) {
                 repository.markTaskCompleted(task.id)
             } else {
-                repository.reopenTask(task.id, newStatus = if (!task.dueDate.isNullOrEmpty()) "today" else "inbox")
+                repository.reopenTask(task.id, newStatus = "inbox")
             }
         }
     }
@@ -91,5 +92,44 @@ class TaskListViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             repository.deleteTask(task)
         }
+    }
+
+    fun createProject(name: String, description: String? = null) {
+        if (name.isBlank()) return
+        viewModelScope.launch { projectRepository.createProject(name, description) }
+    }
+
+    fun deleteProject(project: ProjectEntity) {
+        viewModelScope.launch { projectRepository.deleteProject(project) }
+    }
+
+    fun tasksForProject(projectId: String): Flow<List<TaskEntity>> = repository.getTasksForProject(projectId)
+
+    fun subtasksForTask(taskId: String): Flow<List<SubtaskEntity>> =
+        AppDatabase.getDatabase(getApplication()).taskDao().getSubtasksForTask(taskId)
+
+    fun addSubtask(taskId: String, title: String) {
+        if (title.isBlank()) return
+        viewModelScope.launch {
+            val nextOrder = subtasksForTask(taskId).first().size
+            AppDatabase.getDatabase(getApplication()).taskDao().insertSubtask(
+                SubtaskEntity(
+                    id = "subtask_${System.currentTimeMillis()}_${(1000..9999).random()}",
+                    taskId = taskId,
+                    title = title.trim(),
+                    sortOrder = nextOrder
+                )
+            )
+        }
+    }
+
+    fun toggleSubtask(subtask: SubtaskEntity, isCompleted: Boolean) {
+        viewModelScope.launch {
+            AppDatabase.getDatabase(getApplication()).taskDao().updateSubtask(subtask.copy(isCompleted = isCompleted))
+        }
+    }
+
+    fun deleteSubtask(subtask: SubtaskEntity) {
+        viewModelScope.launch { AppDatabase.getDatabase(getApplication()).taskDao().deleteSubtask(subtask) }
     }
 }

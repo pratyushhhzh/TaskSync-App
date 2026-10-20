@@ -13,20 +13,17 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface TaskDao {
 
-    @Query("SELECT * FROM tasks WHERE status != 'completed' ORDER BY priority ASC, dueDate ASC")
-    fun getAllActiveTasks(): Flow<List<TaskEntity>>
+    @Query("SELECT * FROM tasks ORDER BY CASE WHEN status = 'completed' THEN 1 ELSE 0 END, priority ASC, CASE WHEN dueDate IS NULL THEN 1 ELSE 0 END, dueDate ASC, createdAt DESC")
+    fun getAllTasks(): Flow<List<TaskEntity>>
 
-    @Query("SELECT * FROM tasks WHERE status = 'today' AND status != 'completed' ORDER BY priority ASC")
-    fun getTodayTasks(): Flow<List<TaskEntity>>
-
-    @Query("SELECT * FROM tasks WHERE status = 'inbox' AND status != 'completed' ORDER BY createdAt DESC")
+    @Query("SELECT * FROM tasks WHERE status != 'completed' AND dueDate IS NULL AND projectId IS NULL ORDER BY createdAt DESC")
     fun getInboxTasks(): Flow<List<TaskEntity>>
 
-    @Query("SELECT * FROM tasks WHERE status = 'upcoming' AND status != 'completed' ORDER BY dueDate ASC")
-    fun getUpcomingTasks(): Flow<List<TaskEntity>>
+    @Query("SELECT * FROM tasks WHERE projectId = :projectId ORDER BY CASE WHEN status = 'completed' THEN 1 ELSE 0 END, dueDate ASC, priority ASC, createdAt DESC")
+    fun getTasksForProject(projectId: String): Flow<List<TaskEntity>>
 
-    @Query("SELECT * FROM tasks WHERE status = 'completed' ORDER BY updatedAt DESC")
-    fun getCompletedTasks(): Flow<List<TaskEntity>>
+    @Query("UPDATE tasks SET projectId = NULL, updatedAt = :updatedAt WHERE projectId = :projectId")
+    suspend fun removeProjectFromTasks(projectId: String, updatedAt: Long)
 
     @Query("SELECT * FROM tasks WHERE id = :taskId")
     suspend fun getTaskById(taskId: String): TaskEntity?

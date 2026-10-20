@@ -32,8 +32,12 @@ fun InboxScreen(
     viewModel: TaskListViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
 ) {
     val inboxTasks by viewModel.inboxTasks.collectAsState()
+    val projects by viewModel.projects.collectAsState()
     var selectedTask by remember { mutableStateOf<TaskEntity?>(null) }
     var showBottomSheet by remember { mutableStateOf(false) }
+    val subtasks by remember(selectedTask?.id) {
+        viewModel.subtasksForTask(selectedTask?.id.orEmpty())
+    }.collectAsState(initial = emptyList())
 
     Scaffold(
         floatingActionButton = {
@@ -92,15 +96,19 @@ fun InboxScreen(
         if (showBottomSheet) {
             TaskDetailBottomSheet(
                 task = selectedTask,
+                projects = projects,
+                subtasks = subtasks,
                 onDismissRequest = { showBottomSheet = false },
-                onSaveTask = { title, desc, date, priority ->
+                onSaveTask = { title, desc, date, time, priority, projectId ->
                     if (selectedTask == null) {
                         viewModel.createTask(
                             title = title,
                             description = desc,
                             status = "inbox",
                             dueDate = date,
-                            priority = priority
+                            dueTime = time,
+                            priority = priority,
+                            projectId = projectId
                         )
                     } else {
                         viewModel.updateTask(
@@ -108,7 +116,9 @@ fun InboxScreen(
                                 title = title,
                                 description = desc,
                                 dueDate = date,
-                                priority = priority
+                                dueTime = time,
+                                priority = priority,
+                                projectId = projectId
                             )
                         )
                     }
@@ -116,7 +126,10 @@ fun InboxScreen(
                 onDeleteTask = { task ->
                     viewModel.deleteTask(task)
                     showBottomSheet = false
-                }
+                },
+                onAddSubtask = { viewModel.addSubtask(selectedTask!!.id, it) },
+                onToggleSubtask = viewModel::toggleSubtask,
+                onDeleteSubtask = viewModel::deleteSubtask
             )
         }
     }
