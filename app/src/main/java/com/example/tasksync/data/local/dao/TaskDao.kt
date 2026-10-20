@@ -16,10 +16,10 @@ interface TaskDao {
     @Query("SELECT * FROM tasks ORDER BY CASE WHEN status = 'completed' THEN 1 ELSE 0 END, priority ASC, CASE WHEN dueDate IS NULL THEN 1 ELSE 0 END, dueDate ASC, createdAt DESC")
     fun getAllTasks(): Flow<List<TaskEntity>>
 
-    @Query("SELECT * FROM tasks WHERE status != 'completed' AND dueDate IS NULL AND projectId IS NULL ORDER BY createdAt DESC")
+    @Query("SELECT * FROM tasks WHERE status != 'completed' AND dueDate IS NULL AND projectId IS NULL ORDER BY priority ASC, createdAt DESC")
     fun getInboxTasks(): Flow<List<TaskEntity>>
 
-    @Query("SELECT * FROM tasks WHERE projectId = :projectId ORDER BY CASE WHEN status = 'completed' THEN 1 ELSE 0 END, dueDate ASC, priority ASC, createdAt DESC")
+    @Query("SELECT * FROM tasks WHERE projectId = :projectId ORDER BY CASE WHEN status = 'completed' THEN 1 ELSE 0 END, priority ASC, CASE WHEN dueDate IS NULL THEN 1 ELSE 0 END, dueDate ASC, createdAt DESC")
     fun getTasksForProject(projectId: String): Flow<List<TaskEntity>>
 
     @Query("UPDATE tasks SET projectId = NULL, updatedAt = :updatedAt WHERE projectId = :projectId")
@@ -27,6 +27,9 @@ interface TaskDao {
 
     @Query("SELECT * FROM tasks WHERE id = :taskId")
     suspend fun getTaskById(taskId: String): TaskEntity?
+
+    @Query("SELECT * FROM tasks WHERE reminderEnabled = 1 AND status != 'completed'")
+    suspend fun getTasksWithReminders(): List<TaskEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertTask(task: TaskEntity)

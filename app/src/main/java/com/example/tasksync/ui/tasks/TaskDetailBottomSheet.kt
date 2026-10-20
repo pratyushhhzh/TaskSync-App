@@ -16,6 +16,7 @@ import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Switch
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -49,7 +50,7 @@ fun TaskDetailBottomSheet(
     initialProjectId: String? = null,
     initialDueDate: String? = null,
     onDismissRequest: () -> Unit,
-    onSaveTask: (String, String?, String?, String?, Int, String?) -> Unit,
+    onSaveTask: (String, String?, String?, String?, Int, String?, Boolean, String?) -> Unit,
     onAddSubtask: (String) -> Unit = {},
     onToggleSubtask: (SubtaskEntity, Boolean) -> Unit = { _, _ -> },
     onDeleteSubtask: (SubtaskEntity) -> Unit = {},
@@ -61,6 +62,8 @@ fun TaskDetailBottomSheet(
         mutableStateOf(task?.dueDate?.takeIf { it.isIsoDate() } ?: initialDueDate.orEmpty())
     }
     var dueTime by remember(task) { mutableStateOf(task?.dueTime.orEmpty()) }
+    var reminderEnabled by remember(task) { mutableStateOf(task?.reminderEnabled ?: false) }
+    var recurrenceRule by remember(task) { mutableStateOf(task?.recurrenceRule ?: "none") }
     var priority by remember(task) { mutableIntStateOf(task?.priority ?: 4) }
     var projectId by remember(task, initialProjectId) { mutableStateOf(task?.projectId ?: initialProjectId) }
     var showDatePicker by remember { mutableStateOf(false) }
@@ -117,6 +120,33 @@ fun TaskDetailBottomSheet(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Reminder", style = MaterialTheme.typography.labelLarge)
+                    Text("Notify me around the deadline time", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Switch(
+                    checked = reminderEnabled,
+                    onCheckedChange = { reminderEnabled = it },
+                    enabled = dueDate.isNotBlank() && dueTime.isNotBlank()
+                )
+            }
+
+            Spacer(Modifier.height(16.dp))
+            Text("Repeat", style = MaterialTheme.typography.labelLarge)
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                listOf("none" to "Never", "daily" to "Daily", "weekly" to "Weekly", "monthly" to "Monthly").forEach { (value, label) ->
+                    FilterChip(selected = recurrenceRule == value, onClick = { recurrenceRule = value }, label = { Text(label) })
+                }
+            }
 
             Spacer(Modifier.height(16.dp))
             Text("Priority", style = MaterialTheme.typography.labelLarge)
@@ -202,12 +232,15 @@ fun TaskDetailBottomSheet(
                     onClick = {
                         when {
                             title.isBlank() -> validationMessage = "Enter a task title."
+                            reminderEnabled && (dueDate.isBlank() || dueTime.isBlank()) -> validationMessage = "Choose a deadline date and time to set a reminder."
+                            recurrenceRule != "none" && dueDate.isBlank() -> validationMessage = "Choose a deadline date for a repeating task."
                             dueTime.isNotBlank() && !dueTime.matches(Regex("([01]\\d|2[0-3]):[0-5]\\d")) ->
                                 validationMessage = "Enter time as HH:mm, for example 17:30."
                             else -> {
                                 onSaveTask(
                                     title.trim(), description.ifBlank { null }, dueDate.ifBlank { null },
-                                    dueTime.ifBlank { null }, priority, projectId
+                                    dueTime.ifBlank { null }, priority, projectId,
+                                    reminderEnabled, recurrenceRule.takeIf { it != "none" }
                                 )
                                 onDismissRequest()
                             }

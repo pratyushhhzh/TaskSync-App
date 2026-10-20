@@ -133,7 +133,7 @@ fun TasksScreen(viewModel: TaskListViewModel = viewModel()) {
                 projects = projects,
                 subtasks = subtasks,
                 onDismissRequest = { showTaskSheet = false },
-                onSaveTask = { title, description, date, time, priority, projectId ->
+                onSaveTask = { title, description, date, time, priority, projectId, reminderEnabled, recurrenceRule ->
                     val task = selectedTask
                     if (task == null) {
                         viewModel.createTask(
@@ -142,6 +142,8 @@ fun TasksScreen(viewModel: TaskListViewModel = viewModel()) {
                             status = "inbox",
                             dueDate = date,
                             dueTime = time,
+                            reminderEnabled = reminderEnabled,
+                            recurrenceRule = recurrenceRule,
                             priority = priority,
                             projectId = projectId
                         )
@@ -151,6 +153,8 @@ fun TasksScreen(viewModel: TaskListViewModel = viewModel()) {
                             description = description,
                             dueDate = date,
                             dueTime = time,
+                            reminderEnabled = reminderEnabled,
+                            recurrenceRule = recurrenceRule,
                             priority = priority,
                             projectId = projectId
                         ))

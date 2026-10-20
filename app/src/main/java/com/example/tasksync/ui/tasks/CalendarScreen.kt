@@ -189,7 +189,7 @@ fun CalendarScreen(viewModel: TaskListViewModel = viewModel()) {
                 subtasks = subtasks,
                 initialDueDate = if (selectedTask == null) selectedDate.toString() else null,
                 onDismissRequest = { showTaskSheet = false },
-                onSaveTask = { title, description, date, time, priority, projectId ->
+                onSaveTask = { title, description, date, time, priority, projectId, reminderEnabled, recurrenceRule ->
                     val task = selectedTask
                     if (task == null) {
                         viewModel.createTask(
@@ -198,6 +198,8 @@ fun CalendarScreen(viewModel: TaskListViewModel = viewModel()) {
                             status = "inbox",
                             dueDate = date,
                             dueTime = time,
+                            reminderEnabled = reminderEnabled,
+                            recurrenceRule = recurrenceRule,
                             priority = priority,
                             projectId = projectId
                         )
@@ -207,6 +209,8 @@ fun CalendarScreen(viewModel: TaskListViewModel = viewModel()) {
                             description = description,
                             dueDate = date,
                             dueTime = time,
+                            reminderEnabled = reminderEnabled,
+                            recurrenceRule = recurrenceRule,
                             priority = priority,
                             projectId = projectId
                         ))

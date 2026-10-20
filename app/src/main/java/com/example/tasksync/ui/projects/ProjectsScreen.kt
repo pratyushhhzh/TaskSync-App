@@ -156,18 +156,20 @@ fun ProjectsScreen(viewModel: TaskListViewModel = viewModel()) {
                 subtasks = subtasks,
                 initialProjectId = project?.id,
                 onDismissRequest = { showTaskSheet = false },
-                onSaveTask = { title, description, date, time, priority, projectIdFromEditor ->
+                onSaveTask = { title, description, date, time, priority, projectIdFromEditor, reminderEnabled, recurrenceRule ->
                     if (selectedTask == null) {
                         viewModel.createTask(
                             title = title, description = description,
                             status = "inbox",
-                            dueDate = date, dueTime = time, priority = priority,
+                            dueDate = date, dueTime = time, reminderEnabled = reminderEnabled,
+                            recurrenceRule = recurrenceRule, priority = priority,
                             projectId = projectIdFromEditor
                         )
                     } else {
                         viewModel.updateTask(selectedTask!!.copy(
                             title = title, description = description, dueDate = date,
-                            dueTime = time, priority = priority, projectId = projectIdFromEditor
+                            dueTime = time, reminderEnabled = reminderEnabled,
+                            recurrenceRule = recurrenceRule, priority = priority, projectId = projectIdFromEditor
                         ))
                     }
                 },

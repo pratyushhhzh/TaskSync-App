@@ -28,7 +28,7 @@ class TaskListViewModel(application: Application) : AndroidViewModel(application
     init {
         val taskDao = AppDatabase.getDatabase(application).taskDao()
         val database = AppDatabase.getDatabase(application)
-        repository = TaskRepository(taskDao)
+        repository = TaskRepository(taskDao, application.applicationContext)
         projectRepository = ProjectRepository(database.projectDao(), taskDao)
 
         allTasks = repository.allTasks.stateIn(
@@ -56,6 +56,8 @@ class TaskListViewModel(application: Application) : AndroidViewModel(application
         status: String = "inbox",
         dueDate: String? = null,
         dueTime: String? = null,
+        reminderEnabled: Boolean = false,
+        recurrenceRule: String? = null,
         priority: Int = 4,
         projectId: String? = null
     ) {
@@ -66,6 +68,8 @@ class TaskListViewModel(application: Application) : AndroidViewModel(application
                 status = status,
                 dueDate = dueDate,
                 dueTime = dueTime,
+                reminderEnabled = reminderEnabled,
+                recurrenceRule = recurrenceRule,
                 priority = priority,
                 projectId = projectId
             )

@@ -14,6 +14,10 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,12 +72,20 @@ fun TaskItemCard(
                     )
                 }
 
-                if (!task.dueDate.isNullOrEmpty() || task.priority < 4) {
+                if (!task.dueDate.isNullOrEmpty() || task.priority < 4 || task.recurrenceRule != null || task.reminderEnabled) {
                     Spacer(modifier = Modifier.height(6.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (!task.dueDate.isNullOrEmpty()) {
                             DueDateChip(dueDate = task.dueDate, dueTime = task.dueTime)
                             Spacer(modifier = Modifier.width(8.dp))
+                        }
+                        if (task.reminderEnabled) {
+                            Icon(Icons.Default.NotificationsActive, contentDescription = "Reminder set", tint = MaterialTheme.colorScheme.primary)
+                            Spacer(modifier = Modifier.width(6.dp))
+                        }
+                        if (task.recurrenceRule != null) {
+                            Icon(Icons.Default.Repeat, contentDescription = "Repeats ${task.recurrenceRule}", tint = MaterialTheme.colorScheme.primary)
+                            Spacer(modifier = Modifier.width(6.dp))
                         }
                         PriorityBadge(priority = task.priority)
                     }

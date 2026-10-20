@@ -99,7 +99,7 @@ fun InboxScreen(
                 projects = projects,
                 subtasks = subtasks,
                 onDismissRequest = { showBottomSheet = false },
-                onSaveTask = { title, desc, date, time, priority, projectId ->
+                onSaveTask = { title, desc, date, time, priority, projectId, reminderEnabled, recurrenceRule ->
                     if (selectedTask == null) {
                         viewModel.createTask(
                             title = title,
@@ -107,6 +107,8 @@ fun InboxScreen(
                             status = "inbox",
                             dueDate = date,
                             dueTime = time,
+                            reminderEnabled = reminderEnabled,
+                            recurrenceRule = recurrenceRule,
                             priority = priority,
                             projectId = projectId
                         )
@@ -117,6 +119,8 @@ fun InboxScreen(
                                 description = desc,
                                 dueDate = date,
                                 dueTime = time,
+                                reminderEnabled = reminderEnabled,
+                                recurrenceRule = recurrenceRule,
                                 priority = priority,
                                 projectId = projectId
                             )

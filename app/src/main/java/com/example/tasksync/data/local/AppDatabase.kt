@@ -13,7 +13,7 @@ import com.example.tasksync.data.local.entity.TaskEntity
 
 @Database(
     entities = [TaskEntity::class, SubtaskEntity::class, ProjectEntity::class],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -31,7 +31,7 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "tasksync_database"
-                ).addMigrations(MIGRATION_1_2).fallbackToDestructiveMigration().build()
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).fallbackToDestructiveMigration().build()
                 INSTANCE = instance
                 instance
             }
@@ -42,6 +42,12 @@ abstract class AppDatabase : RoomDatabase() {
                 database.execSQL(
                     "CREATE TABLE IF NOT EXISTS projects (id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, createdAt INTEGER NOT NULL, PRIMARY KEY(id))"
                 )
+            }
+        }
+
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE tasks ADD COLUMN reminderEnabled INTEGER NOT NULL DEFAULT 0")
             }
         }
     }

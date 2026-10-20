@@ -15,6 +15,7 @@ data class TaskEntity(
     val status: String = "inbox", // inbox or completed
     val dueDate: String? = null, // YYYY-MM-DD
     val dueTime: String? = null, // HH:MM:SS
+    val reminderEnabled: Boolean = false,
     val priority: Int = 4, // 1 (High) to 4 (None)
     val assigneeId: String? = null,
     val recurrenceRule: String? = null,
