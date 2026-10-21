@@ -8,6 +8,8 @@ import com.example.tasksync.data.local.entity.TaskEntity
 import com.example.tasksync.data.local.entity.ProjectEntity
 import com.example.tasksync.data.local.entity.SubtaskEntity
 import com.example.tasksync.ui.assistant.VoiceTaskAction
+import com.example.tasksync.ui.assistant.VoiceTaskBrain
+import com.example.tasksync.ui.assistant.VoiceInterpretation
 import com.example.tasksync.data.repository.ProjectRepository
 import com.example.tasksync.data.repository.TaskRepository
 import kotlinx.coroutines.flow.Flow
@@ -145,6 +147,23 @@ class TaskListViewModel(application: Application) : AndroidViewModel(application
                 if (completed > 0) add("Completed $completed task${if (completed == 1) "" else "s"}")
             }.joinToString(" · ")
             onFinished(summary.ifBlank { "Done." })
+        }
+    }
+
+    fun interpretVoiceTranscript(
+        transcript: String,
+        tasks: List<TaskEntity>,
+        onFinished: (String, Boolean) -> Unit
+    ) {
+        viewModelScope.launch {
+            val interpretation = VoiceTaskBrain.interpret(transcript, tasks)
+            when (interpretation) {
+                is VoiceInterpretation.Actions -> executeVoiceActions(interpretation.actions) { message ->
+                    onFinished(message, true)
+                }
+                is VoiceInterpretation.NeedsClarification -> onFinished(interpretation.message, false)
+                is VoiceInterpretation.NotUnderstood -> onFinished(interpretation.message, false)
+            }
         }
     }
 

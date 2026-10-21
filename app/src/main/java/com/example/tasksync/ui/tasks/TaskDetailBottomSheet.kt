@@ -143,7 +143,7 @@ fun TaskDetailBottomSheet(
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                listOf("none" to "Never", "daily" to "Daily", "weekly" to "Weekly", "monthly" to "Monthly").forEach { (value, label) ->
+                listOf("none" to "Never", "daily" to "Daily", "weekdays" to "Weekdays", "weekly" to "Weekly", "monthly" to "Monthly").forEach { (value, label) ->
                     FilterChip(selected = recurrenceRule == value, onClick = { recurrenceRule = value }, label = { Text(label) })
                 }
             }

@@ -95,6 +95,7 @@ class TaskRepository(
         val intervalDays = when (task.recurrenceRule) {
             "daily" -> 1L
             "weekly" -> 7L
+            "weekdays" -> 1L
             "monthly" -> null
             else -> return null
         }
@@ -102,6 +103,9 @@ class TaskRepository(
         val today = LocalDate.now()
         do {
             nextDate = if (task.recurrenceRule == "monthly") nextDate.plusMonths(1) else nextDate.plusDays(intervalDays!!)
+            if (task.recurrenceRule == "weekdays" && nextDate.dayOfWeek.value >= 6) {
+                nextDate = nextDate.plusDays((8 - nextDate.dayOfWeek.value).toLong())
+            }
         } while (nextDate.isBefore(today))
         val next = task.copy(
             id = "task_${System.currentTimeMillis()}_${(1000..9999).random()}",

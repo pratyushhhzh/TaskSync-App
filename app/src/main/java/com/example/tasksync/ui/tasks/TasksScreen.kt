@@ -35,9 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.tasksync.data.local.entity.TaskEntity
-import com.example.tasksync.ui.assistant.VoiceInterpretation
 import com.example.tasksync.ui.assistant.VoiceTaskAssistantDialog
-import com.example.tasksync.ui.assistant.VoiceTaskInterpreter
 import com.example.tasksync.ui.tasks.components.TaskItemCard
 
 @Composable
@@ -208,13 +206,7 @@ fun TasksScreen(viewModel: TaskListViewModel = viewModel()) {
             VoiceTaskAssistantDialog(
                 onDismiss = { showVoiceAssistant = false },
                 onRecognized = { transcript, finish ->
-                    when (val interpretation = VoiceTaskInterpreter.interpret(transcript, allTasks)) {
-                        is VoiceInterpretation.Actions -> viewModel.executeVoiceActions(interpretation.actions) { message ->
-                            finish(message, true)
-                        }
-                        is VoiceInterpretation.NeedsClarification -> finish(interpretation.message, false)
-                        is VoiceInterpretation.NotUnderstood -> finish(interpretation.message, false)
-                    }
+                    viewModel.interpretVoiceTranscript(transcript, allTasks, finish)
                 },
                 onUndo = { finish -> viewModel.undoLastVoiceActions(finish) }
             )
