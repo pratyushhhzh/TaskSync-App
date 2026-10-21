@@ -84,7 +84,9 @@ class SpeechCaptureController(
 
     private fun finishWithAccumulatedSpeech(emptyMessage: String) {
         stopRequested = false
-        val transcript = completedSegments.joinToString(". ").trim()
+        // Android's recognizer often returns after a short pause. That is a
+        // segment boundary, not necessarily the end of a sentence/task.
+        val transcript = completedSegments.joinToString(" ").trim()
         if (transcript.isBlank()) onError(emptyMessage) else onTranscript(transcript)
     }
 

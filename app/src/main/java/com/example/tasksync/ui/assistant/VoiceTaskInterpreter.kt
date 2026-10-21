@@ -141,6 +141,25 @@ object VoiceTaskInterpreter {
 
     private fun parseDateOrTimeUpdate(clause: String, tasks: List<TaskEntity>, today: LocalDate): CommandResult? {
         val text = clause.trim().trimEnd('.', '!', '?')
+        // Conversational rescheduling: "there was a change of plan, the
+        // football match will now be at 7 pm". The task name may only be a
+        // fragment of its saved title, so identify it against existing tasks.
+        val conversationalReschedule = Regex(
+            "\\b(?:change in plan|change of plan|reschedul(?:e|ed|ing)|moved|postponed|pushed back|scheduled)\\b.*?\\b(?:now|instead|new time|new date)\\b|\\bwill now be\\b|\\bwill now start\\b|\\bhas been moved to\\b|\\bis now scheduled for\\b|\\b(?:is|was) changed to\\b",
+            RegexOption.IGNORE_CASE
+        ).containsMatchIn(text)
+        if (conversationalReschedule) {
+            val parsed = parseDateAndTime(text, today)
+            if (parsed.date != null || parsed.time != null) {
+                return resolveTaskMentionedIn(text, tasks.filter { it.status != "completed" }) { task ->
+                    val dueDate = parsed.date?.toString() ?: task.dueDate ?: if (parsed.time != null) today.toString() else null
+                    CommandResult.Action(VoiceTaskAction.Update(task, task.copy(
+                        dueDate = dueDate,
+                        dueTime = parsed.time ?: task.dueTime
+                    )))
+                }
+            }
+        }
         val patterns = listOf(
             Regex("^(?:please\\s+)?(?:set|change|update|move|reschedule|push|postpone|defer)\\s+(?:the\\s+)?(?:deadline|due\\s+date|date|time)\\s+(?:for|of)\\s+(.+?)\\s+(?:to|until|for)\\s+(.+)$", RegexOption.IGNORE_CASE),
             Regex("^(?:please\\s+)?(?:set|change|update|move|reschedule|push|postpone|defer)\\s+(.+?)\\s+(?:deadline|due\\s+date|date|time)\\s+(?:to|until|for)\\s+(.+)$", RegexOption.IGNORE_CASE),
@@ -159,6 +178,28 @@ object VoiceTaskInterpreter {
                 dueDate = dueDate,
                 dueTime = parsed.time ?: task.dueTime
             )))
+        }
+    }
+
+    /** Match a spoken fragment such as "football match" to the saved task
+     * "Have a football match", while refusing equally plausible candidates. */
+    private fun resolveTaskMentionedIn(
+        utterance: String,
+        candidates: List<TaskEntity>,
+        action: (TaskEntity) -> CommandResult
+    ): CommandResult {
+        val spoken = normalizeTitle(utterance).split(' ').toSet()
+        val scored = candidates.mapNotNull { task ->
+            val titleTokens = normalizeTitle(task.title).split(' ').filter { it.length > 1 }.toSet()
+            val overlap = titleTokens.intersect(spoken).size
+            val coverage = overlap.toDouble() / titleTokens.size.coerceAtLeast(1)
+            if (overlap >= 2 && coverage >= 0.5) task to coverage else null
+        }.sortedByDescending { it.second }
+        val best = scored.firstOrNull()?.second
+            ?: return CommandResult.Clarification("I heard a reschedule, but couldn't match it to an existing task. Please include the task's name.")
+        val matches = scored.filter { it.second == best }
+        return if (matches.size == 1) action(matches.single().first) else {
+            CommandResult.Clarification("Which task should I reschedule: ${matches.take(4).joinToString { it.first.title }}?")
         }
     }
 

@@ -208,6 +208,7 @@ fun TasksScreen(viewModel: TaskListViewModel = viewModel()) {
                 onRecognized = { transcript, finish ->
                     viewModel.interpretVoiceTranscript(transcript, allTasks, finish)
                 },
+                onApply = viewModel::applyVoiceActions,
                 onUndo = { finish -> viewModel.undoLastVoiceActions(finish) }
             )
         }

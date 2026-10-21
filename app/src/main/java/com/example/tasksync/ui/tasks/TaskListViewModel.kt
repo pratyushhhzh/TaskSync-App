@@ -153,18 +153,15 @@ class TaskListViewModel(application: Application) : AndroidViewModel(application
     fun interpretVoiceTranscript(
         transcript: String,
         tasks: List<TaskEntity>,
-        onFinished: (String, Boolean) -> Unit
+        onFinished: (VoiceInterpretation) -> Unit
     ) {
         viewModelScope.launch {
-            val interpretation = VoiceTaskBrain.interpret(transcript, tasks)
-            when (interpretation) {
-                is VoiceInterpretation.Actions -> executeVoiceActions(interpretation.actions) { message ->
-                    onFinished(message, true)
-                }
-                is VoiceInterpretation.NeedsClarification -> onFinished(interpretation.message, false)
-                is VoiceInterpretation.NotUnderstood -> onFinished(interpretation.message, false)
-            }
+            onFinished(VoiceTaskBrain.interpret(transcript, tasks))
         }
+    }
+
+    fun applyVoiceActions(actions: List<VoiceTaskAction>, onFinished: (String, Boolean) -> Unit) {
+        executeVoiceActions(actions, onFinished)
     }
 
     fun undoLastVoiceActions(onFinished: (String) -> Unit) {
