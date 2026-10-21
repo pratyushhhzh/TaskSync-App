@@ -20,9 +20,13 @@ fun DueDateChip(
     dueTime: String? = null,
     modifier: Modifier = Modifier
 ) {
-    if (dueDate.isNullOrEmpty()) return
+    if (dueDate.isNullOrEmpty() && dueTime.isNullOrEmpty()) return
 
-    val displayString: String = if (!dueTime.isNullOrEmpty()) "$dueDate $dueTime" else dueDate
+    val displayString = when {
+        !dueDate.isNullOrEmpty() && !dueTime.isNullOrEmpty() -> "$dueDate $dueTime"
+        !dueDate.isNullOrEmpty() -> dueDate
+        else -> dueTime.orEmpty()
+    }
 
     Row(
         modifier = modifier,

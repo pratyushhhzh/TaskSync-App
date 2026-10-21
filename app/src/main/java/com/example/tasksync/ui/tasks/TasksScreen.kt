@@ -16,9 +16,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -32,28 +35,39 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.tasksync.data.local.entity.TaskEntity
+import com.example.tasksync.ui.assistant.VoiceInterpretation
+import com.example.tasksync.ui.assistant.VoiceTaskAssistantDialog
+import com.example.tasksync.ui.assistant.VoiceTaskInterpreter
 import com.example.tasksync.ui.tasks.components.TaskItemCard
 
 @Composable
 fun TasksScreen(viewModel: TaskListViewModel = viewModel()) {
     val allTasks by viewModel.allTasks.collectAsState()
     val projects by viewModel.projects.collectAsState()
+    val projectNames = remember(projects) { projects.associate { it.id to it.name } }
     val activeTasks = allTasks.filter { it.status != "completed" }
     val completedTasks = allTasks.filter { it.status == "completed" }
     var showCompleted by remember { mutableStateOf(false) }
     var selectedTask by remember { mutableStateOf<TaskEntity?>(null) }
+    var taskPendingDeletion by remember { mutableStateOf<TaskEntity?>(null) }
     var showTaskSheet by remember { mutableStateOf(false) }
+    var showVoiceAssistant by remember { mutableStateOf(false) }
     val subtasks by remember(selectedTask?.id) {
         viewModel.subtasksForTask(selectedTask?.id.orEmpty())
     }.collectAsState(initial = emptyList())
 
     Scaffold(
         floatingActionButton = {
-            FloatingActionButton(onClick = {
-                selectedTask = null
-                showTaskSheet = true
-            }) {
-                Icon(Icons.Default.Add, contentDescription = "Add task")
+            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                FloatingActionButton(onClick = { showVoiceAssistant = true }) {
+                    Icon(Icons.Default.Mic, contentDescription = "Use voice assistant")
+                }
+                FloatingActionButton(onClick = {
+                    selectedTask = null
+                    showTaskSheet = true
+                }) {
+                    Icon(Icons.Default.Add, contentDescription = "Add task")
+                }
             }
         }
     ) { padding ->
@@ -89,7 +103,9 @@ fun TasksScreen(viewModel: TaskListViewModel = viewModel()) {
                         TaskItemCard(
                             task = task,
                             onTaskClick = { selectedTask = it; showTaskSheet = true },
-                            onStatusChange = viewModel::toggleTaskCompletion
+                            onStatusChange = viewModel::toggleTaskCompletion,
+                            projectName = task.projectId?.let(projectNames::get),
+                            onTaskLongClick = { taskPendingDeletion = it }
                         )
                     }
                 }
@@ -119,7 +135,9 @@ fun TasksScreen(viewModel: TaskListViewModel = viewModel()) {
                             TaskItemCard(
                                 task = task,
                                 onTaskClick = { selectedTask = it; showTaskSheet = true },
-                                onStatusChange = viewModel::toggleTaskCompletion
+                                onStatusChange = viewModel::toggleTaskCompletion,
+                                projectName = task.projectId?.let(projectNames::get),
+                                onTaskLongClick = { taskPendingDeletion = it }
                             )
                         }
                     }
@@ -164,6 +182,41 @@ fun TasksScreen(viewModel: TaskListViewModel = viewModel()) {
                 onAddSubtask = { title -> selectedTask?.let { task -> viewModel.addSubtask(task.id, title) } },
                 onToggleSubtask = viewModel::toggleSubtask,
                 onDeleteSubtask = viewModel::deleteSubtask
+            )
+        }
+
+        taskPendingDeletion?.let { task ->
+            AlertDialog(
+                onDismissRequest = { taskPendingDeletion = null },
+                title = { Text("Delete task?") },
+                text = { Text("\"${task.title}\" will be permanently deleted.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        viewModel.deleteTask(task)
+                        taskPendingDeletion = null
+                    }) {
+                        Text("Delete", color = MaterialTheme.colorScheme.error)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { taskPendingDeletion = null }) { Text("Cancel") }
+                }
+            )
+        }
+
+        if (showVoiceAssistant) {
+            VoiceTaskAssistantDialog(
+                onDismiss = { showVoiceAssistant = false },
+                onRecognized = { transcript, finish ->
+                    when (val interpretation = VoiceTaskInterpreter.interpret(transcript, allTasks)) {
+                        is VoiceInterpretation.Actions -> viewModel.executeVoiceActions(interpretation.actions) { message ->
+                            finish(message, true)
+                        }
+                        is VoiceInterpretation.NeedsClarification -> finish(interpretation.message, false)
+                        is VoiceInterpretation.NotUnderstood -> finish(interpretation.message, false)
+                    }
+                },
+                onUndo = { finish -> viewModel.undoLastVoiceActions(finish) }
             )
         }
     }

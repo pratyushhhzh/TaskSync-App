@@ -60,12 +60,11 @@ class TaskRepository(
         scheduleReminder(updatedTask)
     }
 
-    suspend fun markTaskCompleted(taskId: String) {
-        taskDao.getTaskById(taskId)?.let { task ->
-            taskDao.updateTaskStatus(taskId, "completed", System.currentTimeMillis())
-            TaskReminderScheduler.cancel(appContext, taskId)
-            createNextOccurrence(task)
-        }
+    suspend fun markTaskCompleted(taskId: String): TaskEntity? {
+        val task = taskDao.getTaskById(taskId) ?: return null
+        taskDao.updateTaskStatus(taskId, "completed", System.currentTimeMillis())
+        TaskReminderScheduler.cancel(appContext, taskId)
+        return createNextOccurrence(task)
     }
 
     suspend fun reopenTask(taskId: String, newStatus: String = "inbox") {
@@ -92,14 +91,14 @@ class TaskRepository(
         TaskReminderScheduler.schedule(appContext, task.id, task.title, task.description, task.dueDate, task.dueTime, task.reminderEnabled && task.status != "completed")
     }
 
-    private suspend fun createNextOccurrence(task: TaskEntity) {
+    private suspend fun createNextOccurrence(task: TaskEntity): TaskEntity? {
         val intervalDays = when (task.recurrenceRule) {
             "daily" -> 1L
             "weekly" -> 7L
             "monthly" -> null
-            else -> return
+            else -> return null
         }
-        var nextDate = task.dueDate?.let { runCatching { LocalDate.parse(it) }.getOrNull() } ?: return
+        var nextDate = task.dueDate?.let { runCatching { LocalDate.parse(it) }.getOrNull() } ?: return null
         val today = LocalDate.now()
         do {
             nextDate = if (task.recurrenceRule == "monthly") nextDate.plusMonths(1) else nextDate.plusDays(intervalDays!!)
@@ -113,5 +112,6 @@ class TaskRepository(
         )
         taskDao.insertTask(next)
         scheduleReminder(next)
+        return next
     }
 }

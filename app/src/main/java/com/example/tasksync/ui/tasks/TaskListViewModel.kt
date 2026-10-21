@@ -7,6 +7,7 @@ import com.example.tasksync.data.local.AppDatabase
 import com.example.tasksync.data.local.entity.TaskEntity
 import com.example.tasksync.data.local.entity.ProjectEntity
 import com.example.tasksync.data.local.entity.SubtaskEntity
+import com.example.tasksync.ui.assistant.VoiceTaskAction
 import com.example.tasksync.data.repository.ProjectRepository
 import com.example.tasksync.data.repository.TaskRepository
 import kotlinx.coroutines.flow.Flow
@@ -17,6 +18,13 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 class TaskListViewModel(application: Application) : AndroidViewModel(application) {
+
+    private sealed interface VoiceUndoAction {
+        data class Restore(val task: TaskEntity) : VoiceUndoAction
+        data class Delete(val taskId: String) : VoiceUndoAction
+    }
+
+    private var lastVoiceUndo: List<VoiceUndoAction> = emptyList()
 
     private val repository: TaskRepository
     private val projectRepository: ProjectRepository
@@ -94,6 +102,68 @@ class TaskListViewModel(application: Application) : AndroidViewModel(application
 
     fun moveTaskToStatus(task: TaskEntity, status: String) {
         viewModelScope.launch { repository.setTaskStatus(task.id, status) }
+    }
+
+    fun executeVoiceActions(actions: List<VoiceTaskAction>, onFinished: (String) -> Unit) {
+        viewModelScope.launch {
+            val undoActions = mutableListOf<VoiceUndoAction>()
+            var created = 0
+            var updated = 0
+            var completed = 0
+            actions.forEach { action ->
+                when (action) {
+                    is VoiceTaskAction.Create -> {
+                        val task = repository.createTask(
+                            title = action.title,
+                            dueDate = action.dueDate,
+                            dueTime = action.dueTime,
+                            priority = action.priority,
+                            reminderEnabled = action.reminderEnabled,
+                            recurrenceRule = action.recurrenceRule
+                        )
+                        undoActions += VoiceUndoAction.Delete(task.id)
+                        created++
+                    }
+                    is VoiceTaskAction.Update -> {
+                        repository.updateTask(action.after)
+                        undoActions += VoiceUndoAction.Restore(action.before)
+                        updated++
+                    }
+                    is VoiceTaskAction.Complete -> {
+                        val before = repository.getTaskById(action.task.id) ?: action.task
+                        val nextOccurrence = repository.markTaskCompleted(action.task.id)
+                        undoActions += VoiceUndoAction.Restore(before)
+                        nextOccurrence?.let { undoActions += VoiceUndoAction.Delete(it.id) }
+                        completed++
+                    }
+                }
+            }
+            lastVoiceUndo = undoActions
+            val summary = buildList {
+                if (created > 0) add("Added $created task${if (created == 1) "" else "s"}")
+                if (updated > 0) add("Updated $updated task${if (updated == 1) "" else "s"}")
+                if (completed > 0) add("Completed $completed task${if (completed == 1) "" else "s"}")
+            }.joinToString(" · ")
+            onFinished(summary.ifBlank { "Done." })
+        }
+    }
+
+    fun undoLastVoiceActions(onFinished: (String) -> Unit) {
+        viewModelScope.launch {
+            val undoActions = lastVoiceUndo.asReversed()
+            if (undoActions.isEmpty()) {
+                onFinished("There is nothing to undo.")
+                return@launch
+            }
+            undoActions.forEach { action ->
+                when (action) {
+                    is VoiceUndoAction.Restore -> repository.updateTask(action.task)
+                    is VoiceUndoAction.Delete -> repository.getTaskById(action.taskId)?.let { repository.deleteTask(it) }
+                }
+            }
+            lastVoiceUndo = emptyList()
+            onFinished("Undid the last voice action.")
+        }
     }
 
     fun deleteTask(task: TaskEntity) {

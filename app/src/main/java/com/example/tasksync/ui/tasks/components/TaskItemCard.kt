@@ -1,6 +1,7 @@
 package com.example.tasksync.ui.tasks.components
 
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -26,18 +27,24 @@ import androidx.compose.ui.unit.dp
 import com.example.tasksync.data.local.entity.TaskEntity
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 fun TaskItemCard(
     task: TaskEntity,
     onTaskClick: (TaskEntity) -> Unit,
     onStatusChange: (TaskEntity, Boolean) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    projectName: String? = null,
+    onTaskLongClick: (TaskEntity) -> Unit = {}
 ) {
     val isCompleted = task.status == "completed"
 
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .clickable { onTaskClick(task) },
+            .combinedClickable(
+                onClick = { onTaskClick(task) },
+                onLongClick = { onTaskLongClick(task) }
+            ),
         shape = RoundedCornerShape(8.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
@@ -63,6 +70,15 @@ fun TaskItemCard(
                     color = if (isCompleted) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
                 )
 
+                if (!projectName.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "Project · $projectName",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+
                 if (!task.description.isNullOrEmpty()) {
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
@@ -72,10 +88,10 @@ fun TaskItemCard(
                     )
                 }
 
-                if (!task.dueDate.isNullOrEmpty() || task.priority < 4 || task.recurrenceRule != null || task.reminderEnabled) {
+                if (!task.dueDate.isNullOrEmpty() || !task.dueTime.isNullOrEmpty() || task.priority < 4 || task.recurrenceRule != null || task.reminderEnabled) {
                     Spacer(modifier = Modifier.height(6.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (!task.dueDate.isNullOrEmpty()) {
+                        if (!task.dueDate.isNullOrEmpty() || !task.dueTime.isNullOrEmpty()) {
                             DueDateChip(dueDate = task.dueDate, dueTime = task.dueTime)
                             Spacer(modifier = Modifier.width(8.dp))
                         }
