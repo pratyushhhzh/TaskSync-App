@@ -15,15 +15,20 @@ sealed interface VoiceTaskAction {
         val dueTime: String?,
         val priority: Int,
         val recurrenceRule: String?,
-        val reminderEnabled: Boolean
+        val reminderEnabled: Boolean,
+        val description: String? = null
     ) : VoiceTaskAction
 
     data class Update(val before: TaskEntity, val after: TaskEntity) : VoiceTaskAction
     data class Complete(val task: TaskEntity) : VoiceTaskAction
+    data class Reopen(val task: TaskEntity) : VoiceTaskAction
+    data class Delete(val task: TaskEntity) : VoiceTaskAction
+    data class AddSubtask(val task: TaskEntity, val title: String) : VoiceTaskAction
 }
 
 sealed interface VoiceInterpretation {
     data class Actions(val actions: List<VoiceTaskAction>) : VoiceInterpretation
+    data class Reply(val message: String) : VoiceInterpretation
     data class NeedsClarification(val message: String) : VoiceInterpretation
     data class NotUnderstood(val message: String) : VoiceInterpretation
 }
@@ -46,13 +51,15 @@ object VoiceTaskInterpreter {
         "collect", "return", "order", "cancel", "print", "pack", "bring", "drop off", "fill out"
     )
     private val taskStarter = Regex(
-        "^(?:please\\s+)?(?:${actionVerbs.joinToString("|") { Regex.escape(it) }}|add|create|remember|remind me to)\\b",
+        "^(?:please\\s+)?(?:${VoiceTaskIntentPhrases.taskStarters.joinToString("|") { Regex.escape(it) }})\\b",
         RegexOption.IGNORE_CASE
     )
 
     fun interpret(utterance: String, tasks: List<TaskEntity>, today: LocalDate = LocalDate.now()): VoiceInterpretation {
         val normalized = normalizeRecognizedText(utterance).trim()
         if (normalized.isBlank()) return VoiceInterpretation.NotUnderstood("I didn't catch any words. Try speaking again.")
+
+        parseTaskQuery(normalized, tasks, today)?.let { return VoiceInterpretation.Reply(it) }
 
         val actions = mutableListOf<VoiceTaskAction>()
         val clarifications = mutableListOf<String>()
@@ -84,16 +91,70 @@ object VoiceTaskInterpreter {
     }
 
     private fun parseExistingTaskCommand(clause: String, tasks: List<TaskEntity>, today: LocalDate): CommandResult {
-        parseCompletion(clause, tasks, today)?.let { return it }
-        parsePriorityUpdate(clause, tasks)?.let { return it }
-        parseRecurrenceUpdate(clause, tasks, today)?.let { return it }
-        parseDateOrTimeUpdate(clause, tasks, today)?.let { return it }
-        if (looksLikeUpdate(clause)) {
-            return CommandResult.Clarification(
-                "I heard a request to change a task, but couldn't identify the task or change. Please say its name and the new value."
-            )
+        return when (VoiceIntentClassifier.classify(clause)) {
+            VoiceIntentClassifier.Intent.COMPLETE -> parseCompletion(clause, tasks, today) ?: CommandResult.NotACommand
+            VoiceIntentClassifier.Intent.REOPEN -> parseReopen(clause, tasks) ?: CommandResult.Clarification("Please name the completed task you want to reopen.")
+            VoiceIntentClassifier.Intent.DELETE -> parseDelete(clause, tasks) ?: CommandResult.Clarification("Please name the task you want to delete.")
+            VoiceIntentClassifier.Intent.ADD_SUBTASK -> parseSubtask(clause, tasks) ?: CommandResult.Clarification("Say the checklist item and the task it belongs to.")
+            VoiceIntentClassifier.Intent.UPDATE -> {
+                parseDescriptionUpdate(clause, tasks)
+                    ?: parsePriorityUpdate(clause, tasks)
+                    ?: parseRecurrenceUpdate(clause, tasks, today)
+                    ?: parseDateOrTimeUpdate(clause, tasks, today)
+                    ?: CommandResult.Clarification("I heard a request to change a task, but couldn't identify the task or change. Please say its name and the new value.")
+            }
+            VoiceIntentClassifier.Intent.CREATE, VoiceIntentClassifier.Intent.UNKNOWN -> CommandResult.NotACommand
         }
-        return CommandResult.NotACommand
+    }
+
+    private fun parseReopen(clause: String, tasks: List<TaskEntity>): CommandResult? {
+        val match = Regex("^(?:please\\s+)?(?:reopen|uncomplete|mark\\s+(.+?)\\s+as\\s+incomplete|mark\\s+(.+?)\\s+not\\s+done)\\s*(.*)$", RegexOption.IGNORE_CASE).find(clause.trim().trimEnd('.', '!', '?'))
+        if (match != null) {
+            val target = match.groups[1]?.value ?: match.groups[2]?.value ?: match.groups[3]?.value.orEmpty()
+            return resolveTask(target, tasks.filter { it.status == "completed" }) { CommandResult.Action(VoiceTaskAction.Reopen(it)) }
+        }
+        val named = Regex("^(?:please\\s+)?reopen\\s+(?:the\\s+task\\s+)?(.+)$", RegexOption.IGNORE_CASE).find(clause.trim().trimEnd('.', '!', '?')) ?: return null
+        return resolveTask(named.groupValues[1], tasks.filter { it.status == "completed" }) { CommandResult.Action(VoiceTaskAction.Reopen(it)) }
+    }
+
+    private fun parseDelete(clause: String, tasks: List<TaskEntity>): CommandResult? {
+        val match = Regex("^(?:please\\s+)?(?:delete|remove)\\s+(?:the\\s+)?(?:task\\s+)?(.+)$", RegexOption.IGNORE_CASE).find(clause.trim().trimEnd('.', '!', '?')) ?: return null
+        return resolveTask(match.groupValues[1], tasks) { CommandResult.Action(VoiceTaskAction.Delete(it)) }
+    }
+
+    private fun parseSubtask(clause: String, tasks: List<TaskEntity>): CommandResult? {
+        val match = Regex("^(?:please\\s+)?(?:add|create)\\s+(?:a\\s+)?(?:subtask|checklist\\s+item)\\s+(.+?)\\s+to\\s+(.+)$", RegexOption.IGNORE_CASE).find(clause.trim().trimEnd('.', '!', '?')) ?: return null
+        val itemTitle = match.groupValues[1].trim().trim('"', '\'')
+        if (itemTitle.isBlank()) return CommandResult.Clarification("What should the subtask be called?")
+        return resolveTask(match.groupValues[2], tasks.filter { it.status != "completed" }) {
+            CommandResult.Action(VoiceTaskAction.AddSubtask(it, itemTitle))
+        }
+    }
+
+    private fun parseDescriptionUpdate(clause: String, tasks: List<TaskEntity>): CommandResult? {
+        val add = Regex("^(?:please\\s+)?(?:add|set|change|update)\\s+(?:a\\s+)?(?:note|description|details?)\\s+(?:for|on|to)\\s+(.+?)\\s+(?:to|as)\\s+(.+)$", RegexOption.IGNORE_CASE).find(clause.trim().trimEnd('.', '!', '?'))
+        val remove = Regex("^(?:please\\s+)?(?:remove|clear|delete)\\s+(?:the\\s+)?(?:note|description|details?)\\s+(?:for|on|from)\\s+(.+)$", RegexOption.IGNORE_CASE).find(clause.trim().trimEnd('.', '!', '?'))
+        if (add == null && remove == null) return null
+        val target = add?.groupValues?.get(1) ?: remove!!.groupValues[1]
+        val description = add?.groupValues?.get(2)?.trim()?.takeIf(String::isNotBlank)
+        return resolveTask(target, tasks.filter { it.status != "completed" }) { task ->
+            CommandResult.Action(VoiceTaskAction.Update(task, task.copy(description = description)))
+        }
+    }
+
+    private fun parseTaskQuery(utterance: String, tasks: List<TaskEntity>, today: LocalDate): String? {
+        if (!Regex("^(?:what|which|show|list|do\\s+i\\s+have)\\b", RegexOption.IGNORE_CASE).containsMatchIn(utterance)) return null
+        val date = parseDateAndTime(utterance, today).date
+        val open = tasks.filter { it.status != "completed" }
+        val selected = if (date != null) open.filter { it.dueDate == date.toString() } else open
+        return if (selected.isEmpty()) {
+            if (date != null) "You have no open tasks due ${date}." else "You have no open tasks."
+        } else {
+            val heading = if (date != null) "Tasks due ${date}:" else "Your open tasks:"
+            heading + " " + selected.take(8).joinToString("; ") { task ->
+                task.title + (task.dueTime?.let { " at $it" } ?: "")
+            } + if (selected.size > 8) "; and ${selected.size - 8} more." else "."
+        }
     }
 
     private fun parseCompletion(clause: String, tasks: List<TaskEntity>, today: LocalDate): CommandResult? {
@@ -145,19 +206,23 @@ object VoiceTaskInterpreter {
         // football match will now be at 7 pm". The task name may only be a
         // fragment of its saved title, so identify it against existing tasks.
         val conversationalReschedule = Regex(
-            "\\b(?:change in plan|change of plan|reschedul(?:e|ed|ing)|moved|postponed|pushed back|scheduled)\\b.*?\\b(?:now|instead|new time|new date)\\b|\\bwill now be\\b|\\bwill now start\\b|\\bhas been moved to\\b|\\bis now scheduled for\\b|\\b(?:is|was) changed to\\b",
+            "\\b(?:change in plan|change of plan|reschedul(?:e|ed|ing)|moved|postponed|pushed back|scheduled)\\b.*?\\b(?:now|instead|new time|new date|to|until)\\b|\\bwill now be\\b|\\bwill now start\\b|\\bhas been (?:moved|changed|rescheduled|postponed|shifted)\\b|\\bhas moved to\\b|\\bis now scheduled for\\b|\\b(?:is|was) changed to\\b",
             RegexOption.IGNORE_CASE
         ).containsMatchIn(text)
         if (conversationalReschedule) {
             val parsed = parseDateAndTime(text, today)
             if (parsed.date != null || parsed.time != null) {
-                return resolveTaskMentionedIn(text, tasks.filter { it.status != "completed" }) { task ->
+                val candidates = tasks.filter { it.status != "completed" }
+                val spokenTarget = extractRescheduleTarget(text)
+                val resolver: (TaskEntity) -> CommandResult = { task ->
                     val dueDate = parsed.date?.toString() ?: task.dueDate ?: if (parsed.time != null) today.toString() else null
                     CommandResult.Action(VoiceTaskAction.Update(task, task.copy(
                         dueDate = dueDate,
                         dueTime = parsed.time ?: task.dueTime
                     )))
                 }
+                return if (spokenTarget != null) resolveTask(spokenTarget, candidates, resolver)
+                else resolveTaskMentionedIn(text, candidates, resolver)
             }
         }
         val patterns = listOf(
@@ -181,6 +246,20 @@ object VoiceTaskInterpreter {
         }
     }
 
+    private fun extractRescheduleTarget(text: String): String? {
+        val namedChange = Regex(
+            "^(?:actually[, ]+)?(?:the\\s+)?(.+?)\\s+(?:has|have|is|was)\\s+(?:been\\s+)?(?:rescheduled|postponed|moved|shifted|changed|pushed)\\b",
+            RegexOption.IGNORE_CASE
+        ).find(text)
+        if (namedChange != null) return namedChange.groupValues[1].trim().trim(',', ' ')
+
+        val conversational = Regex(
+            "(?:change in plan|change of plan)[, ]+(?:the\\s+)?(.+?)\\s+(?:which was planned.*?\\s+)?(?:will now be|will now start|is now scheduled)",
+            RegexOption.IGNORE_CASE
+        ).find(text)
+        return conversational?.groupValues?.get(1)?.trim()?.trim(',', ' ')
+    }
+
     /** Match a spoken fragment such as "football match" to the saved task
      * "Have a football match", while refusing equally plausible candidates. */
     private fun resolveTaskMentionedIn(
@@ -198,7 +277,8 @@ object VoiceTaskInterpreter {
         val best = scored.firstOrNull()?.second
             ?: return CommandResult.Clarification("I heard a reschedule, but couldn't match it to an existing task. Please include the task's name.")
         val matches = scored.filter { it.second == best }
-        return if (matches.size == 1) action(matches.single().first) else {
+        val closeAlternative = scored.drop(1).firstOrNull()?.second?.let { best - it < 0.08 } == true
+        return if (matches.size == 1 && !closeAlternative) action(matches.single().first) else {
             CommandResult.Clarification("Which task should I reschedule: ${matches.take(4).joinToString { it.first.title }}?")
         }
     }
@@ -239,7 +319,8 @@ object VoiceTaskInterpreter {
         val bestScore = scored.firstOrNull()?.second
             ?: return CommandResult.Clarification("I couldn't find a task named ‘$requestedTitle’. Please say its full name.")
         val best = scored.filter { it.second == bestScore }
-        return if (best.size == 1) action(best.single().first) else {
+        val closeAlternative = scored.drop(1).firstOrNull()?.second?.let { bestScore - it < 0.08 } == true
+        return if (best.size == 1 && !closeAlternative) action(best.single().first) else {
             CommandResult.Clarification(
                 "I found several tasks that could match ‘$requestedTitle’: ${best.take(4).joinToString { it.first.title }}. Please say the full task name."
             )
@@ -299,9 +380,13 @@ object VoiceTaskInterpreter {
 
     private fun parseCreate(clause: String, today: LocalDate): VoiceTaskAction.Create? {
         val metadata = parseDateAndTime(clause, today)
+        val dayPart = Regex("\\b(morning|afternoon|evening|night)\\b", RegexOption.IGNORE_CASE).find(clause)?.value
+        if (Regex("\\b(?:that thing|something|some stuff|sometime|someday|whatever|not sure)\\b", RegexOption.IGNORE_CASE).containsMatchIn(clause)) return null
         var title = clause
         metadata.dateToken?.let { title = title.replace(it, " ", ignoreCase = true) }
         metadata.timeToken?.let { title = title.replace(it, " ", ignoreCase = true) }
+        dayPart?.let { title = title.replace(it, " ", ignoreCase = true) }
+        title = title.trim()
 
         val priorityMatch = Regex("\\b(?:high|medium|med|low|normal|none)\\s+priority\\b|\\b(?:urgent|important|p[1-4])\\b", RegexOption.IGNORE_CASE).find(title)
         val priority = when (priorityMatch?.value?.lowercase(Locale.ROOT)?.replace(" priority", "")) {
@@ -333,6 +418,7 @@ object VoiceTaskInterpreter {
             .replace(Regex("^(?:i\\s+(?:also\\s+)?|i\\s+)?(?:would\\s+)?(?:need|have|want|should|must|will)\\s+(?:to\\s+)?", RegexOption.IGNORE_CASE), " ")
             .replace(Regex("^(?:i am going to|i'm going to|i have got to|i've got to|i plan to)\\s+", RegexOption.IGNORE_CASE), " ")
             .replace(Regex("^(?:add|create|make|remember(?:\\s+to)?|remind me to|don't forget to|need to|have to)\\s+", RegexOption.IGNORE_CASE), " ")
+            .replace(Regex("\\b(buy|get|submit|prepare|finish|complete|study|write|read|make|do|attend|schedule|book|print|pack|bring|organize|clean|review|fix|create|call|send|pay|visit|practice|collect|return|order|cancel|email|renew|drop off|fill out)\\s+(?:a|an|the|my)\\s+", RegexOption.IGNORE_CASE), "$1 ")
             .replace(Regex("^go\\s+(?:and\\s+)?(?=(?:buy|get|pick up|call|send|collect|return|order|bring|drop off)\\b)", RegexOption.IGNORE_CASE), " ")
             .replace(Regex("^(?:is|will be)\\s+(?:my|a|the)\\s+", RegexOption.IGNORE_CASE), " ")
             .replace(Regex("^(?:a|an|the|my)\\s+", RegexOption.IGNORE_CASE), " ")
@@ -345,9 +431,17 @@ object VoiceTaskInterpreter {
         // Remove a reason clause after a task only when it was not split by the utterance segmenter.
         title = title.replace(Regex("\\s+(?:due to which|because(?: of which)?|which means)\\b.*$", RegexOption.IGNORE_CASE), "")
             .replace(Regex("\\s+(?:is|will be|scheduled|happening|coming up)$", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("^(?:a|an|the|my)\\s+", RegexOption.IGNORE_CASE), "")
             .trim()
+        title = title.replace(
+            Regex("^(?:(?:i|we)\\s+)?(?:(?:also|then)\\s+)?(?:need|have|want|should|must|will)\\s+(?:to\\s+)?", RegexOption.IGNORE_CASE),
+            ""
+        ).replace(Regex("^(?:a|an|the|my)\\s+", RegexOption.IGNORE_CASE), "").trim()
         if (title.length !in 2..120 || !title.any(Char::isLetter)) return null
-        title = title.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
+        title = title.split(' ').joinToString(" ") { word ->
+            if (word.length <= 4 && word.all(Char::isUpperCase)) word
+            else word.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
+        }
 
         return VoiceTaskAction.Create(
             title = title,
@@ -355,7 +449,8 @@ object VoiceTaskInterpreter {
             dueTime = metadata.time,
             priority = priority,
             recurrenceRule = recurrence,
-            reminderEnabled = explicitReminder && metadata.time != null
+            reminderEnabled = explicitReminder && metadata.time != null,
+            description = dayPart?.let { "Preferred time of day: ${it.lowercase(Locale.ROOT)}" }
         )
     }
 
@@ -442,7 +537,7 @@ object VoiceTaskInterpreter {
             ""
         )
         val starterAlternatives = (listOf(
-            "i need", "i also need", "i have", "i also have", "i have to", "i have got to", "i should", "i must", "i will", "i would need", "i want to",
+            "i need", "i also need", "also need", "i have", "i also have", "also have", "i have to", "i have got to", "i should", "i must", "i will", "i would need", "i want to",
             "please add", "add", "create", "remind me to", "don't forget to", "mark", "set", "change",
             "update", "complete", "finish", "reschedule", "move", "push"
         ) + actionVerbs).distinct().joinToString("|") { Regex.escape(it) }
@@ -450,15 +545,44 @@ object VoiceTaskInterpreter {
             Regex("\\s+and\\s+(?=(?:$starterAlternatives)\\b)", RegexOption.IGNORE_CASE),
             ";"
         )
+        val weekdayNames = "monday|tuesday|wednesday|thursday|friday|saturday|sunday"
+        text = text.replace(
+            Regex("\\band\\s+(?=(?:today|tomorrow|(?:next|this)\\s+(?:$weekdayNames)|$weekdayNames)\\s+(?:i|we)\\s+(?:also\\s+)?(?:need|have|should|must|will|want)\\b)", RegexOption.IGNORE_CASE),
+            "; "
+        )
+        text = text.replace(
+            Regex("(?<![iI])\\s+(?=(?:also|then)\\s+(?:(?:i|we)\\s+)?(?:need|have|should|must|will|want|buy|call|submit|finish|prepare|study|attend|complete)\\b)", RegexOption.IGNORE_CASE),
+            "; "
+        )
+        text = text.replace(
+            Regex("\\s+(?=(?:i|we)\\s+(?:also\\s+)?(?:need|have|should|must|will|want)\\b)", RegexOption.IGNORE_CASE),
+            "; "
+        )
+        // When two coordinated phrases each carry their own deadline, treat
+        // them as separate responsibilities (e.g. "exam tomorrow and a
+        // submission on Friday"). Avoid splitting ordinary noun lists.
+        text = Regex("\\s+and\\s+(?=(?:a|an|the|my)\\s+[^;.!?]{1,60}\\b(?:today|tomorrow|on\\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|by\\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|next\\s+(?:week|monday|tuesday|wednesday|thursday|friday|saturday|sunday))\\b)", RegexOption.IGNORE_CASE)
+            .replace(text, "; ")
         text = text.replace(
             Regex(",\\s*(?=(?:$starterAlternatives)\\b)", RegexOption.IGNORE_CASE),
             ";"
         )
-        return text.split(';').map { it.trim().trim(',', ' ') }.filter(String::isNotBlank)
+        val pieces = text.split(';').map { it.trim().trim(',', ' ') }.filter(String::isNotBlank)
+        val merged = mutableListOf<String>()
+        val dateLeadIn = Regex("^(?:today|tomorrow|day after tomorrow|next week(?:\\s+(?:$weekdayNames))?|next\\s+(?:$weekdayNames)|this\\s+(?:$weekdayNames)|$weekdayNames)(?:\\s+(?:morning|afternoon|evening|night))?$", RegexOption.IGNORE_CASE)
+        for (piece in pieces) {
+            if (merged.isNotEmpty() && dateLeadIn.matches(merged.last()) && Regex("^(?:i|we)\\s+", RegexOption.IGNORE_CASE).containsMatchIn(piece)) {
+                merged[merged.lastIndex] = "${merged.last()} $piece"
+            } else {
+                merged += piece
+            }
+        }
+        return merged
     }
 
     private fun normalizeRecognizedText(text: String): String {
         var normalized = text
+            .replace(Regex("\\b(?:i\\s+)?do\\s+have\\b", RegexOption.IGNORE_CASE), "I have")
             .replace(Regex("\\btomm?or+ow\\b", RegexOption.IGNORE_CASE), "tomorrow")
             .replace(Regex("\\btmrw\\b", RegexOption.IGNORE_CASE), "tomorrow")
             .replace(Regex("\\b(?:wednsday|wednesdy|wensday)\\b", RegexOption.IGNORE_CASE), "Wednesday")
@@ -491,11 +615,6 @@ object VoiceTaskInterpreter {
         val obligation = Regex("\\b(?:i\\s+(?:also\\s+)?need|i have|i would need|i should|i must|i will|don't forget|remind me)\\b", RegexOption.IGNORE_CASE).containsMatchIn(clause)
         return metadata.date != null || metadata.time != null || hasRepeat || obligation || taskStarter.containsMatchIn(clause.trim())
     }
-
-    private fun looksLikeUpdate(phrase: String): Boolean = Regex(
-        "^(?:please\\s+)?(?:mark|set|move|reschedule|change|update|push|postpone|defer|repeat|complete|finish|i finished|i completed|i am done)\\b",
-        RegexOption.IGNORE_CASE
-    ).containsMatchIn(phrase.trim())
 
     private fun normalizeTitle(value: String): String = value.lowercase(Locale.ROOT)
         .replace(Regex("^(?:the|my|a|an|task)\\s+"), "")

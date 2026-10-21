@@ -3,6 +3,7 @@ package com.example.tasksync.ui.tasks
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.room.withTransaction
 import com.example.tasksync.data.local.AppDatabase
 import com.example.tasksync.data.local.entity.TaskEntity
 import com.example.tasksync.data.local.entity.ProjectEntity
@@ -24,10 +25,12 @@ class TaskListViewModel(application: Application) : AndroidViewModel(application
     private sealed interface VoiceUndoAction {
         data class Restore(val task: TaskEntity) : VoiceUndoAction
         data class Delete(val taskId: String) : VoiceUndoAction
+        data class DeleteSubtask(val subtask: SubtaskEntity) : VoiceUndoAction
     }
 
     private var lastVoiceUndo: List<VoiceUndoAction> = emptyList()
 
+    private val database: AppDatabase = AppDatabase.getDatabase(application)
     private val repository: TaskRepository
     private val projectRepository: ProjectRepository
 
@@ -36,8 +39,7 @@ class TaskListViewModel(application: Application) : AndroidViewModel(application
     val projects: StateFlow<List<ProjectEntity>>
 
     init {
-        val taskDao = AppDatabase.getDatabase(application).taskDao()
-        val database = AppDatabase.getDatabase(application)
+        val taskDao = database.taskDao()
         repository = TaskRepository(taskDao, application.applicationContext)
         projectRepository = ProjectRepository(database.projectDao(), taskDao)
 
@@ -106,17 +108,23 @@ class TaskListViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch { repository.setTaskStatus(task.id, status) }
     }
 
-    fun executeVoiceActions(actions: List<VoiceTaskAction>, onFinished: (String) -> Unit) {
+    fun executeVoiceActions(actions: List<VoiceTaskAction>, onFinished: (String, Boolean) -> Unit) {
         viewModelScope.launch {
             val undoActions = mutableListOf<VoiceUndoAction>()
             var created = 0
             var updated = 0
             var completed = 0
-            actions.forEach { action ->
+            var reopened = 0
+            var deleted = 0
+            var subtasksAdded = 0
+            try {
+                database.withTransaction {
+                    actions.forEach { action ->
                 when (action) {
                     is VoiceTaskAction.Create -> {
                         val task = repository.createTask(
                             title = action.title,
+                            description = action.description,
                             dueDate = action.dueDate,
                             dueTime = action.dueTime,
                             priority = action.priority,
@@ -138,15 +146,45 @@ class TaskListViewModel(application: Application) : AndroidViewModel(application
                         nextOccurrence?.let { undoActions += VoiceUndoAction.Delete(it.id) }
                         completed++
                     }
+                    is VoiceTaskAction.Reopen -> {
+                        undoActions += VoiceUndoAction.Restore(action.task)
+                        repository.reopenTask(action.task.id)
+                        reopened++
+                    }
+                    is VoiceTaskAction.Delete -> {
+                        undoActions += VoiceUndoAction.Restore(action.task)
+                        repository.deleteTask(action.task)
+                        deleted++
+                    }
+                    is VoiceTaskAction.AddSubtask -> {
+                        val dao = AppDatabase.getDatabase(getApplication()).taskDao()
+                        val subtask = SubtaskEntity(
+                            id = "subtask_${System.currentTimeMillis()}_${(1000..9999).random()}",
+                            taskId = action.task.id,
+                            title = action.title.trim(),
+                            sortOrder = dao.getSubtasksForTask(action.task.id).first().size
+                        )
+                        dao.insertSubtask(subtask)
+                        undoActions += VoiceUndoAction.DeleteSubtask(subtask)
+                        subtasksAdded++
+                    }
                 }
+                    }
+                }
+            } catch (_: Exception) {
+                onFinished("I couldn't save those changes. Please review and try again.", false)
+                return@launch
             }
             lastVoiceUndo = undoActions
             val summary = buildList {
                 if (created > 0) add("Added $created task${if (created == 1) "" else "s"}")
                 if (updated > 0) add("Updated $updated task${if (updated == 1) "" else "s"}")
                 if (completed > 0) add("Completed $completed task${if (completed == 1) "" else "s"}")
+                if (reopened > 0) add("Reopened $reopened task${if (reopened == 1) "" else "s"}")
+                if (deleted > 0) add("Deleted $deleted task${if (deleted == 1) "" else "s"}")
+                if (subtasksAdded > 0) add("Added $subtasksAdded checklist item${if (subtasksAdded == 1) "" else "s"}")
             }.joinToString(" · ")
-            onFinished(summary.ifBlank { "Done." })
+            onFinished(summary.ifBlank { "Done." }, true)
         }
     }
 
@@ -173,8 +211,9 @@ class TaskListViewModel(application: Application) : AndroidViewModel(application
             }
             undoActions.forEach { action ->
                 when (action) {
-                    is VoiceUndoAction.Restore -> repository.updateTask(action.task)
+                    is VoiceUndoAction.Restore -> repository.restoreTask(action.task)
                     is VoiceUndoAction.Delete -> repository.getTaskById(action.taskId)?.let { repository.deleteTask(it) }
+                    is VoiceUndoAction.DeleteSubtask -> AppDatabase.getDatabase(getApplication()).taskDao().deleteSubtask(action.subtask)
                 }
             }
             lastVoiceUndo = emptyList()

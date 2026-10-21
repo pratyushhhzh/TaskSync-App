@@ -60,6 +60,11 @@ class TaskRepository(
         scheduleReminder(updatedTask)
     }
 
+    suspend fun restoreTask(task: TaskEntity) {
+        taskDao.insertTask(task)
+        scheduleReminder(task)
+    }
+
     suspend fun markTaskCompleted(taskId: String): TaskEntity? {
         val task = taskDao.getTaskById(taskId) ?: return null
         taskDao.updateTaskStatus(taskId, "completed", System.currentTimeMillis())

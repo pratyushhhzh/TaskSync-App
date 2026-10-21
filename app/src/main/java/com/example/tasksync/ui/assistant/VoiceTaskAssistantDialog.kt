@@ -56,13 +56,15 @@ fun VoiceTaskAssistantDialog(
     var applied by remember { mutableStateOf(false) }
     var actions by remember { mutableStateOf<List<VoiceTaskAction>>(emptyList()) }
     var canApply by remember { mutableStateOf(false) }
+    var selectedActionIndex by remember { mutableStateOf(0) }
+    var transcriptExpanded by remember { mutableStateOf(false) }
 
     val currentOnRecognized by rememberUpdatedState(onRecognized)
     val currentOnApply by rememberUpdatedState(onApply)
     val controller = remember(context) {
         SpeechCaptureController(
             context = context,
-            onListening = { state = VoiceDialogState.Listening; transcript = ""; actions = emptyList(); applied = false; canUndo = false; canApply = false; message = "Listening… Say as many tasks as you like, then tap Stop." },
+            onListening = { state = VoiceDialogState.Listening; transcript = ""; actions = emptyList(); selectedActionIndex = 0; transcriptExpanded = false; applied = false; canUndo = false; canApply = false; message = "Listening… Say as many tasks as you like, then tap Stop." },
             onTranscript = { phrase ->
                 transcript = phrase
                 state = VoiceDialogState.Processing
@@ -71,6 +73,7 @@ fun VoiceTaskAssistantDialog(
                     when (interpretation) {
                         is VoiceInterpretation.Actions -> {
                             actions = interpretation.actions
+                            selectedActionIndex = 0
                             canApply = true
                             message = "Review the proposed changes. You can edit each field before saving."
                         }
@@ -79,6 +82,9 @@ fun VoiceTaskAssistantDialog(
                         }
                         is VoiceInterpretation.NotUnderstood -> {
                             actions = emptyList(); canApply = false; message = interpretation.message
+                        }
+                        is VoiceInterpretation.Reply -> {
+                            actions = emptyList(); canApply = false; applied = true; message = interpretation.message
                         }
                     }
                     state = VoiceDialogState.Result
@@ -111,34 +117,92 @@ fun VoiceTaskAssistantDialog(
                     CircularProgressIndicator()
                 }
                 if (transcript.isNotBlank() && state != VoiceDialogState.Processing) {
-                    Spacer(Modifier.height(14.dp))
-                    Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = RoundedCornerShape(14.dp)
-                    ) {
-                        Text("Heard: $transcript", modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
+                    TextButton(onClick = { transcriptExpanded = !transcriptExpanded }) {
+                        Text(if (transcriptExpanded) "Hide original transcript" else "Show original transcript")
+                    }
+                    if (transcriptExpanded) {
+                        OutlinedTextField(
+                            value = transcript,
+                            onValueChange = { transcript = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Original transcript") },
+                            supportingText = { Text("Correct recognition errors, then reinterpret.") },
+                            minLines = 2,
+                            maxLines = 5
+                        )
+                        TextButton(onClick = {
+                            state = VoiceDialogState.Processing
+                            message = "Reinterpreting transcript…"
+                            currentOnRecognized(transcript) { interpretation ->
+                                when (interpretation) {
+                                    is VoiceInterpretation.Actions -> {
+                                        actions = interpretation.actions; selectedActionIndex = 0; canApply = true; applied = false
+                                        message = "Review each proposed operation before applying."
+                                    }
+                                    is VoiceInterpretation.NeedsClarification -> { actions = emptyList(); canApply = false; message = interpretation.message }
+                                    is VoiceInterpretation.NotUnderstood -> { actions = emptyList(); canApply = false; message = interpretation.message }
+                                    is VoiceInterpretation.Reply -> { actions = emptyList(); canApply = false; applied = true; message = interpretation.message }
+                                }
+                                state = VoiceDialogState.Result
+                            }
+                        }) { Text("Reinterpret") }
                     }
                 }
                 if (state == VoiceDialogState.Result && !applied) {
-                    actions.forEachIndexed { index, action ->
-                        Spacer(Modifier.height(10.dp))
-                        when (action) {
+                    if (actions.isNotEmpty()) {
+                        Text(actionSummary(actions), style = MaterialTheme.typography.labelLarge)
+                        Spacer(Modifier.height(8.dp))
+                        if (actions.size > 1) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                TextButton(onClick = { selectedActionIndex = (selectedActionIndex - 1).coerceAtLeast(0) }, enabled = selectedActionIndex > 0) { Text("Previous") }
+                                Text("${selectedActionIndex + 1} of ${actions.size}", style = MaterialTheme.typography.labelMedium)
+                                TextButton(onClick = { selectedActionIndex = (selectedActionIndex + 1).coerceAtMost(actions.lastIndex) }, enabled = selectedActionIndex < actions.lastIndex) { Text("Next") }
+                            }
+                        }
+                        val index = selectedActionIndex.coerceIn(0, actions.lastIndex)
+                        val action = actions[index]
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(16.dp)
+                        ) {
+                          Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            when (action) {
                             is VoiceTaskAction.Create -> {
-                                Text("New task", style = MaterialTheme.typography.labelLarge)
+                                Text("New task", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                                 OutlinedTextField(action.title, { value -> actions = actions.updated(index) { action.copy(title = value) } }, label = { Text("Task title") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                                OutlinedTextField(action.description.orEmpty(), { value -> actions = actions.updated(index) { action.copy(description = value.takeIf(String::isNotBlank)) } }, label = { Text("Description") }, modifier = Modifier.fillMaxWidth(), minLines = 2, maxLines = 3)
                                 OutlinedTextField(action.dueDate.orEmpty(), { value -> actions = actions.updated(index) { action.copy(dueDate = value.takeIf(String::isNotBlank)) } }, label = { Text("Due date (YYYY-MM-DD)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                                 OutlinedTextField(action.dueTime.orEmpty(), { value -> actions = actions.updated(index) { action.copy(dueTime = value.takeIf(String::isNotBlank)) } }, label = { Text("Due time (HH:MM)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                                 OutlinedTextField(action.priority.toString(), { value -> value.toIntOrNull()?.takeIf { it in 1..4 }?.let { priority -> actions = actions.updated(index) { action.copy(priority = priority) } } }, label = { Text("Priority (1 high – 4 none)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                             }
                             is VoiceTaskAction.Update -> {
-                                Text("Update: ${action.before.title}", style = MaterialTheme.typography.labelLarge)
+                                Text("Update existing task: ${action.before.title}", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                                 OutlinedTextField(action.after.title, { value -> actions = actions.updated(index) { action.copy(after = action.after.copy(title = value)) } }, label = { Text("Task title") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                                OutlinedTextField(action.after.description.orEmpty(), { value -> actions = actions.updated(index) { action.copy(after = action.after.copy(description = value.takeIf(String::isNotBlank))) } }, label = { Text("Description") }, modifier = Modifier.fillMaxWidth(), minLines = 2, maxLines = 3)
                                 OutlinedTextField(action.after.dueDate.orEmpty(), { value -> actions = actions.updated(index) { action.copy(after = action.after.copy(dueDate = value.takeIf(String::isNotBlank))) } }, label = { Text("Due date (YYYY-MM-DD)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                                 OutlinedTextField(action.after.dueTime.orEmpty(), { value -> actions = actions.updated(index) { action.copy(after = action.after.copy(dueTime = value.takeIf(String::isNotBlank))) } }, label = { Text("Due time (HH:MM)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                                 OutlinedTextField(action.after.priority.toString(), { value -> value.toIntOrNull()?.takeIf { it in 1..4 }?.let { priority -> actions = actions.updated(index) { action.copy(after = action.after.copy(priority = priority)) } } }, label = { Text("Priority (1 high – 4 none)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                             }
                             is VoiceTaskAction.Complete -> Text("Mark completed: ${action.task.title}", style = MaterialTheme.typography.labelLarge)
+                            is VoiceTaskAction.Reopen -> Text("Reopen task: ${action.task.title}", style = MaterialTheme.typography.labelLarge)
+                            is VoiceTaskAction.Delete -> Text("Delete task: ${action.task.title}", style = MaterialTheme.typography.labelLarge)
+                            is VoiceTaskAction.AddSubtask -> {
+                                Text("Add checklist item to ${action.task.title}", style = MaterialTheme.typography.labelLarge)
+                                OutlinedTextField(action.title, { value -> actions = actions.updated(index) { action.copy(title = value) } }, label = { Text("Checklist item") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                            }
+                            }
+                            if (action is VoiceTaskAction.Create || action is VoiceTaskAction.Update || action is VoiceTaskAction.Delete || action is VoiceTaskAction.Complete || action is VoiceTaskAction.Reopen || action is VoiceTaskAction.AddSubtask) {
+                                TextButton(onClick = {
+                                    actions = actions.filterIndexed { proposalIndex, _ -> proposalIndex != index }
+                                    selectedActionIndex = (index - 1).coerceAtLeast(0)
+                                    if (actions.isEmpty()) {
+                                        canApply = false
+                                        message = "All proposed operations were removed. Nothing will be saved."
+                                    }
+                                }) { Text("Remove this proposal") }
+                            }
+                          }
                         }
                     }
                 }
@@ -160,16 +224,12 @@ fun VoiceTaskAssistantDialog(
                         currentOnApply(actions) { result, undoAvailable ->
                             message = result
                             canUndo = undoAvailable
-                            applied = true
+                            applied = undoAvailable
                             state = VoiceDialogState.Result
                         }
-                    }, enabled = actions.all { action -> when (action) {
-                        is VoiceTaskAction.Create -> action.title.isNotBlank()
-                        is VoiceTaskAction.Update -> action.after.title.isNotBlank()
-                        is VoiceTaskAction.Complete -> true
-                    } }) { Text("Apply") }
+                    }, enabled = actions.isNotEmpty() && actions.all(::isValidProposedAction)) { Text("Apply all (${actions.size})") }
                 }
-                if (state == VoiceDialogState.Ready || state == VoiceDialogState.Error || (state == VoiceDialogState.Result && applied)) {
+                if (state == VoiceDialogState.Ready || state == VoiceDialogState.Error || (state == VoiceDialogState.Result && (applied || !canApply))) {
                     Button(onClick = {
                         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                             controller.start()
@@ -198,6 +258,27 @@ fun VoiceTaskAssistantDialog(
 
 private inline fun List<VoiceTaskAction>.updated(index: Int, transform: (VoiceTaskAction) -> VoiceTaskAction): List<VoiceTaskAction> =
     mapIndexed { current, action -> if (current == index) transform(action) else action }
+
+private fun actionSummary(actions: List<VoiceTaskAction>): String {
+    val creates = actions.count { it is VoiceTaskAction.Create }
+    val updates = actions.count { it is VoiceTaskAction.Update }
+    val other = actions.size - creates - updates
+    return buildList {
+        if (creates > 0) add("$creates new task${if (creates == 1) "" else "s"}")
+        if (updates > 0) add("$updates update${if (updates == 1) "" else "s"}")
+        if (other > 0) add("$other other action${if (other == 1) "" else "s"}")
+    }.joinToString(" · ")
+}
+
+private fun isValidProposedAction(action: VoiceTaskAction): Boolean = when (action) {
+    is VoiceTaskAction.Create -> action.title.isNotBlank() && validDate(action.dueDate) && validTime(action.dueTime) && action.priority in 1..4
+    is VoiceTaskAction.Update -> action.after.title.isNotBlank() && validDate(action.after.dueDate) && validTime(action.after.dueTime) && action.after.priority in 1..4
+    is VoiceTaskAction.AddSubtask -> action.title.isNotBlank()
+    is VoiceTaskAction.Complete, is VoiceTaskAction.Reopen, is VoiceTaskAction.Delete -> true
+}
+
+private fun validDate(value: String?): Boolean = value.isNullOrBlank() || runCatching { java.time.LocalDate.parse(value) }.isSuccess
+private fun validTime(value: String?): Boolean = value.isNullOrBlank() || runCatching { java.time.LocalTime.parse(value) }.isSuccess
 
 @Composable
 private fun IconMicListening() {
