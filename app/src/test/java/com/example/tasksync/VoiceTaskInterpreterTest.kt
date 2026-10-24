@@ -2,154 +2,196 @@ package com.example.tasksync
 
 import com.example.tasksync.data.local.entity.TaskEntity
 import com.example.tasksync.ui.assistant.VoiceInterpretation
-import com.example.tasksync.ui.assistant.VoiceTaskAction
 import com.example.tasksync.ui.assistant.VoiceTaskInterpreter
-import java.time.LocalDate
+import java.time.Clock
+import java.time.Instant
+import java.time.ZoneId
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class VoiceTaskInterpreterTest {
-    private val today = LocalDate.of(2026, 10, 21)
+    private val emptyTasks = emptyList<TaskEntity>()
 
     @Test
-    fun createsMultipleTasksWithDatesFromOneUtterance() {
-        val result = VoiceTaskInterpreter.interpret(
-            "I need to buy boots tomorrow and call mom next Friday",
-            emptyList(),
-            today
-        )
-
-        val actions = (result as VoiceInterpretation.Actions).actions
-        assertEquals(2, actions.size)
-        assertEquals("Buy Boots", (actions[0] as VoiceTaskAction.Create).title)
-        assertEquals("2026-10-22", (actions[0] as VoiceTaskAction.Create).dueDate)
-        assertEquals("Call Mom", (actions[1] as VoiceTaskAction.Create).title)
-        assertEquals("2026-10-23", (actions[1] as VoiceTaskAction.Create).dueDate)
+    fun extractsConciseTitleFromOrdinaryTaskStatement() {
+        val proposal = proposal("Hi, I need to buy some football boots tomorrow")
+        assertEquals("Buy Some Football Boots", proposal.title)
+        assertEquals("Buy Some Football Boots", proposal.action.title)
+        assertEquals("2026-10-22", proposal.dueDate.toString())
     }
 
     @Test
-    fun extractsThreeNaturalSpeechTasksAndKeepsDayPartOutOfTitle() {
-        val result = VoiceTaskInterpreter.interpret(
-            "I have my environmental science exam next Monday. I have a football match today. I also need to complete a website by Saturday morning.",
-            emptyList(),
-            today
-        )
-        val actions = (result as VoiceInterpretation.Actions).actions.map { it as VoiceTaskAction.Create }
-        assertEquals(3, actions.size)
-        assertEquals("Environmental Science Exam", actions[0].title)
-        assertEquals("2026-10-26", actions[0].dueDate)
-        assertEquals("Football Match", actions[1].title)
-        assertEquals("2026-10-21", actions[1].dueDate)
-        assertEquals("Complete Website", actions[2].title)
-        assertEquals("2026-10-24", actions[2].dueDate)
-        assertEquals("Preferred time of day: morning", actions[2].description)
-        assertEquals(null, actions[2].dueTime)
+    fun missingDateTimeAndPriorityRemainUnspecified() {
+        val proposal = proposal("Please submit my science report")
+        assertEquals("Submit Science Report", proposal.title)
+        assertNull(proposal.dueDate)
+        assertNull(proposal.dueTime)
+        assertNull(proposal.priority)
+        assertNull(proposal.action.dueDate)
+        assertNull(proposal.action.dueTime)
+        assertEquals(4, proposal.action.priority) // Existing TaskEntity default means “no priority”.
     }
 
     @Test
-    fun splitsTasksWithoutPunctuationAndAssociatesDatesAndTime() {
-        val result = VoiceTaskInterpreter.interpret(
-            "Tomorrow I have a DBMS exam and Friday I need to submit my AI project also I have football practice next Wednesday at 7:30 PM.",
-            emptyList(),
-            today
-        )
-
-        val actions = (result as VoiceInterpretation.Actions).actions.map { it as VoiceTaskAction.Create }
-        assertEquals(3, actions.size)
-        assertEquals("DBMS Exam", actions[0].title)
-        assertEquals("2026-10-22", actions[0].dueDate)
-        assertEquals("Submit AI Project", actions[1].title)
-        assertEquals("2026-10-23", actions[1].dueDate)
-        assertEquals("Football Practice", actions[2].title)
-        assertEquals("2026-10-28", actions[2].dueDate)
-        assertEquals("19:30", actions[2].dueTime)
+    fun extractsExplicitDateAndTime() {
+        val proposal = proposal("I have a football tournament on November 12 at 9:30 pm")
+        assertEquals("Football Tournament", proposal.title)
+        assertEquals("2026-11-12", proposal.dueDate.toString())
+        assertEquals("21:30", proposal.dueTime)
     }
 
     @Test
-    fun splitsActionListsIntoIndependentResponsibilities() {
-        val result = VoiceTaskInterpreter.interpret(
-            "I need to study DBMS, finish the report, and prepare the presentation.",
-            emptyList(),
-            today
-        )
-
-        val actions = (result as VoiceInterpretation.Actions).actions.map { it as VoiceTaskAction.Create }
-        assertEquals(listOf("Study DBMS", "Finish Report", "Prepare Presentation"), actions.map { it.title })
+    fun extractsExplicitPriorityWithoutInventingWhenAbsent() {
+        val urgent = proposal("Finish the project urgently, high priority")
+        assertEquals(1, urgent.priority)
+        val low = proposal("Read the book with low priority")
+        assertEquals(3, low.priority)
+        assertNull(proposal("Read the book").priority)
     }
 
     @Test
-    fun postponedExistingTaskIsUpdated() {
-        val task = task("Environmental Science Exam", dueDate = "2026-10-26")
-        val result = VoiceTaskInterpreter.interpret(
-            "My environmental science exam has been postponed to next Tuesday",
-            listOf(task),
-            today
-        )
-        val action = (result as VoiceInterpretation.Actions).actions.single() as VoiceTaskAction.Update
-        assertEquals(task.id, action.before.id)
-        assertEquals("2026-10-27", action.after.dueDate)
+    fun resolvesRelativeDatesAgainstInjectedClockZone() {
+        val clock = Clock.fixed(Instant.parse("2026-10-21T20:30:00Z"), ZoneId.of("Asia/Kolkata"))
+        val tomorrow = proposal("Buy medicine tomorrow", clock)
+        assertEquals("2026-10-23", tomorrow.dueDate.toString())
+        val weekday = proposal("I have a quiz test next week's Wednesday", clock)
+        assertEquals("2026-10-28", weekday.dueDate.toString())
     }
 
     @Test
-    fun unclearVagueRequestDoesNotBecomeInventedTask() {
-        val result = VoiceTaskInterpreter.interpret("I need to do that thing sometime", emptyList(), today)
+    fun sameInstantUsesInjectedLocalTimezoneForRelativeDate() {
+        val instant = Instant.parse("2026-10-21T20:30:00Z")
+        val india = proposal("Call mom tomorrow", Clock.fixed(instant, ZoneId.of("Asia/Kolkata")))
+        val losAngeles = proposal("Call mom tomorrow", Clock.fixed(instant, ZoneId.of("America/Los_Angeles")))
+        assertEquals("2026-10-23", india.dueDate.toString())
+        assertEquals("2026-10-22", losAngeles.dueDate.toString())
+    }
+
+    @Test
+    fun extractsMultipleTasksWithTheirOwnRelativeDeadlines() {
+        val proposals = proposals(
+            "Tomorrow I have my DBMS exam, the day after tomorrow I need to submit my project, and next Wednesday at 7:30 PM I have football."
+        )
+        assertEquals(listOf("DBMS Exam", "Submit Project", "Football"), proposals.map { it.title })
+        assertEquals(listOf("2026-10-22", "2026-10-23", "2026-10-28"), proposals.map { it.dueDate.toString() })
+        assertEquals(listOf(null, null, "19:30"), proposals.map { it.dueTime })
+    }
+
+    @Test
+    fun extractsSeparateDatesTimesAndPrioritiesInOneTranscript() {
+        val proposals = proposals(
+            "Tomorrow I have an exam P1, and Friday at 9:30 am I need to submit the report P2"
+        )
+        assertEquals(listOf("2026-10-22", "2026-10-23"), proposals.map { it.dueDate.toString() })
+        assertEquals(listOf(null, "09:30"), proposals.map { it.dueTime })
+        assertEquals(listOf(1, 2), proposals.map { it.priority })
+    }
+
+    @Test
+    fun doesNotSplitTaskTitleAtOrdinaryAndConjunction() {
+        val proposal = proposal("I need to plan and organize a charity event next Friday")
+        assertEquals("Plan And Organize Charity Event", proposal.title)
+        assertEquals("2026-10-23", proposal.dueDate.toString())
+    }
+
+    @Test
+    fun handlesFillerAndImperfectPunctuation() {
+        val proposals = proposals(
+            "Um... tomorrow I have my DBMS exam, uh, the day after tomorrow I need to submit my project"
+        )
+        assertEquals(listOf("DBMS Exam", "Submit Project"), proposals.map { it.title })
+        assertEquals(listOf("2026-10-22", "2026-10-23"), proposals.map { it.dueDate.toString() })
+    }
+
+    @Test
+    fun exactDeviceTranscriptKeepsThreeTasksAndFlagsUnclearEnglishExamDate() {
+        val result = VoiceTaskInterpreter.interpret(
+            "I have a football tournament How long that I need you to remind me for my medication at 9:00 p.m. And from next week I have my English I have my English exam from the next week's Monday",
+            emptyTasks,
+            Clock.fixed(Instant.parse("2026-10-23T04:00:00Z"), ZoneId.of("Asia/Kolkata"))
+        )
+        assertTrue("Expected reviewable proposals, got $result", result is VoiceInterpretation.Proposals)
+        val proposals = (result as VoiceInterpretation.Proposals).proposals
+        assertEquals(listOf("Football Tournament", "Medication", "English Exam"), proposals.map { it.title })
+        assertNull(proposals[0].dueDate)
+        assertEquals("21:00", proposals[1].dueTime)
+        assertNull(proposals[1].dueDate)
+        assertTrue(proposals[1].action.reminderEnabled)
+        assertNull(proposals[2].dueDate)
+        assertTrue(proposals[2].clarification?.contains("date phrase") == true)
+    }
+
+    @Test
+    fun medicationReminderDoesNotInventDateAndHasConciseTitle() {
+        val proposal = proposal("I need you to remind me for my medication at 9:00 p.m.")
+        assertEquals("Medication", proposal.title)
+        assertNull(proposal.dueDate)
+        assertEquals("21:00", proposal.dueTime)
+        assertTrue(proposal.action.reminderEnabled)
+    }
+
+    @Test
+    fun repeatedSelfCorrectionDoesNotCreateDuplicateTasks() {
+        val proposals = proposals("I have my English I have my English exam next Monday")
+        assertEquals(listOf("English Exam"), proposals.map { it.title })
+        assertEquals("2026-10-26", proposals.single().dueDate.toString())
+    }
+
+    @Test
+    fun removesDanglingConversationalFillerButKeepsMeaningfulHowLongTitle() {
+        val proposals = proposals("I have a football tournament how long that, and I need to submit report")
+        assertEquals("Football Tournament", proposals.first().title)
+        assertEquals("How Long Is The Football Game", proposal("How long is the football game tomorrow").title)
+    }
+
+    @Test
+    fun fromNextWeekWeekdayIsMarkedUnclearInsteadOfUsedAsDeadline() {
+        val proposal = proposal("I have my English exam from next week and from next week's Monday")
+        assertEquals("English Exam", proposal.title)
+        assertNull(proposal.dueDate)
+        assertTrue(proposal.clarification?.contains("date phrase") == true)
+    }
+
+    @Test
+    fun ambiguousOrUnassociatedDateRequiresClarification() {
+        val result = VoiceTaskInterpreter.interpret("Tomorrow and I have something", emptyTasks, fixedClock())
+        assertTrue(result is VoiceInterpretation.NeedsClarification || result is VoiceInterpretation.NotUnderstood)
+    }
+
+    @Test
+    fun unsupportedOrVagueStatementIsNotUnderstood() {
+        val result = VoiceTaskInterpreter.interpret("I need to do that thing sometime", emptyTasks, fixedClock())
         assertTrue(result is VoiceInterpretation.NotUnderstood)
     }
 
     @Test
-    fun conversationalRescheduleUpdatesExistingTaskInsteadOfCreating() {
-        val task = task("Have a football match")
-        val result = VoiceTaskInterpreter.interpret(
-            "There was a change in plan the football match which was planned will now be at 7:00 pm",
-            listOf(task),
-            today
-        )
-
-        val action = (result as VoiceInterpretation.Actions).actions.single() as VoiceTaskAction.Update
-        assertEquals(task.id, action.before.id)
-        assertEquals(task.title, action.after.title)
-        assertEquals("19:00", action.after.dueTime)
+    fun interpretationReturnsProposalWithoutMutatingProvidedTasks() {
+        val existing = TaskEntity(id = "existing", userId = "local_user", title = "Read book")
+        val result = VoiceTaskInterpreter.interpret("Submit the report tomorrow", listOf(existing), fixedClock())
+        assertTrue(result is VoiceInterpretation.Proposal)
+        assertEquals("Read book", existing.title)
+        assertNull(existing.dueDate)
     }
 
-    @Test
-    fun ambiguousTaskReferenceAsksInsteadOfChoosing() {
-        val tasks = listOf(task("Football match"), task("Football tournament"))
-        val result = VoiceTaskInterpreter.interpret("Reschedule football to 7 pm", tasks, today)
-
-        assertTrue(result is VoiceInterpretation.NeedsClarification)
+    private fun proposal(text: String, clock: Clock = fixedClock()): com.example.tasksync.ui.assistant.VoiceTaskProposal {
+        val result = VoiceTaskInterpreter.interpret(text, emptyTasks, clock)
+        assertTrue("Expected one task proposal, got $result", result is VoiceInterpretation.Proposal)
+        return (result as VoiceInterpretation.Proposal).proposal
     }
 
-    @Test
-    fun supportsDeleteReopenAndChecklistActions() {
-        val open = task("Buy medicine")
-        val completed = task("Submit report", status = "completed")
-
-        val delete = VoiceTaskInterpreter.interpret("Delete Buy medicine", listOf(open), today)
-        assertTrue((delete as VoiceInterpretation.Actions).actions.single() is VoiceTaskAction.Delete)
-
-        val reopen = VoiceTaskInterpreter.interpret("Reopen Submit report", listOf(completed), today)
-        assertTrue((reopen as VoiceInterpretation.Actions).actions.single() is VoiceTaskAction.Reopen)
-
-        val subtask = VoiceTaskInterpreter.interpret("Add a subtask bring boots to Have a football match", listOf(task("Have a football match")), today)
-        val action = (subtask as VoiceInterpretation.Actions).actions.single() as VoiceTaskAction.AddSubtask
-        assertEquals("bring boots", action.title)
+    private fun proposals(text: String, clock: Clock = fixedClock()): List<com.example.tasksync.ui.assistant.VoiceTaskProposal> {
+        val result = VoiceTaskInterpreter.interpret(text, emptyTasks, clock)
+        return when (result) {
+            is VoiceInterpretation.Proposal -> listOf(result.proposal)
+            is VoiceInterpretation.Proposals -> result.proposals
+            else -> throw AssertionError("Expected task proposals, got $result")
+        }
     }
 
-    @Test
-    fun answersTaskListQueryWithoutProducingMutation() {
-        val task = task("Buy medicine", dueDate = "2026-10-22")
-        val result = VoiceTaskInterpreter.interpret("What tasks are due tomorrow?", listOf(task), today)
-
-        assertTrue(result is VoiceInterpretation.Reply)
-        assertTrue((result as VoiceInterpretation.Reply).message.contains("Buy medicine"))
-    }
-
-    private fun task(title: String, status: String = "inbox", dueDate: String? = null) = TaskEntity(
-        id = "id_$title",
-        userId = "local_user",
-        title = title,
-        status = status,
-        dueDate = dueDate
+    private fun fixedClock(): Clock = Clock.fixed(
+        Instant.parse("2026-10-21T04:00:00Z"),
+        ZoneId.of("Asia/Kolkata")
     )
 }

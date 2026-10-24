@@ -77,6 +77,21 @@ fun VoiceTaskAssistantDialog(
                             canApply = true
                             message = "Review the proposed changes. You can edit each field before saving."
                         }
+                        is VoiceInterpretation.Proposal -> {
+                            actions = listOf(interpretation.proposal.action)
+                            selectedActionIndex = 0
+                            canApply = true
+                            message = interpretation.proposal.clarification
+                                ?: "Review the proposed task. Unspecified date, time, and priority are left blank/default."
+                        }
+                        is VoiceInterpretation.Proposals -> {
+                            actions = interpretation.proposals.map { it.action }
+                            selectedActionIndex = 0
+                            canApply = actions.isNotEmpty()
+                            message = if (interpretation.proposals.any { it.clarification != null }) {
+                                "Review each proposed task. One or more dates were unclear, so confirm them before applying."
+                            } else "Review each proposed task and edit any fields before saving."
+                        }
                         is VoiceInterpretation.NeedsClarification -> {
                             actions = emptyList(); canApply = false; message = interpretation.message
                         }
@@ -139,6 +154,15 @@ fun VoiceTaskAssistantDialog(
                                         actions = interpretation.actions; selectedActionIndex = 0; canApply = true; applied = false
                                         message = "Review each proposed operation before applying."
                                     }
+                                    is VoiceInterpretation.Proposal -> {
+                                        actions = listOf(interpretation.proposal.action); selectedActionIndex = 0; canApply = true; applied = false
+                                        message = interpretation.proposal.clarification
+                                            ?: "Review the proposed task. Unspecified date, time, and priority are left blank/default."
+                                    }
+                                    is VoiceInterpretation.Proposals -> {
+                                        actions = interpretation.proposals.map { it.action }; selectedActionIndex = 0; canApply = actions.isNotEmpty(); applied = false
+                                        message = "Review each proposed task and edit any fields before saving."
+                                    }
                                     is VoiceInterpretation.NeedsClarification -> { actions = emptyList(); canApply = false; message = interpretation.message }
                                     is VoiceInterpretation.NotUnderstood -> { actions = emptyList(); canApply = false; message = interpretation.message }
                                     is VoiceInterpretation.Reply -> { actions = emptyList(); canApply = false; applied = true; message = interpretation.message }
@@ -174,7 +198,7 @@ fun VoiceTaskAssistantDialog(
                                 OutlinedTextField(action.description.orEmpty(), { value -> actions = actions.updated(index) { action.copy(description = value.takeIf(String::isNotBlank)) } }, label = { Text("Description") }, modifier = Modifier.fillMaxWidth(), minLines = 2, maxLines = 3)
                                 OutlinedTextField(action.dueDate.orEmpty(), { value -> actions = actions.updated(index) { action.copy(dueDate = value.takeIf(String::isNotBlank)) } }, label = { Text("Due date (YYYY-MM-DD)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                                 OutlinedTextField(action.dueTime.orEmpty(), { value -> actions = actions.updated(index) { action.copy(dueTime = value.takeIf(String::isNotBlank)) } }, label = { Text("Due time (HH:MM)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                                OutlinedTextField(action.priority.toString(), { value -> value.toIntOrNull()?.takeIf { it in 1..4 }?.let { priority -> actions = actions.updated(index) { action.copy(priority = priority) } } }, label = { Text("Priority (1 high – 4 none)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                                OutlinedTextField(action.priority.toString(), { value -> value.toIntOrNull()?.takeIf { it in 1..4 }?.let { priority -> actions = actions.updated(index) { action.copy(priority = priority) } } }, label = { Text("Priority (1 high – 4 none; default is 4)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                             }
                             is VoiceTaskAction.Update -> {
                                 Text("Update existing task: ${action.before.title}", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)

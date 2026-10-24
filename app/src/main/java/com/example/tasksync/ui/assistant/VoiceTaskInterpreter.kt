@@ -2,6 +2,7 @@ package com.example.tasksync.ui.assistant
 
 import com.example.tasksync.data.local.entity.TaskEntity
 import java.time.DayOfWeek
+import java.time.Clock
 import java.time.LocalDate
 import java.time.Month
 import java.time.temporal.TemporalAdjusters
@@ -28,13 +29,26 @@ sealed interface VoiceTaskAction {
 
 sealed interface VoiceInterpretation {
     data class Actions(val actions: List<VoiceTaskAction>) : VoiceInterpretation
+    data class Proposal(val proposal: VoiceTaskProposal) : VoiceInterpretation
+    data class Proposals(val proposals: List<VoiceTaskProposal>) : VoiceInterpretation
     data class Reply(val message: String) : VoiceInterpretation
     data class NeedsClarification(val message: String) : VoiceInterpretation
     data class NotUnderstood(val message: String) : VoiceInterpretation
 }
 
+/** One proposed create operation. Null fields mean the speaker did not specify that value. */
+data class VoiceTaskProposal(
+    val action: VoiceTaskAction.Create,
+    val title: String,
+    val dueDate: LocalDate?,
+    val dueTime: String?,
+    val priority: Int?,
+    val clarification: String? = null
+)
+
 /** Offline intent parser for voice transcripts. It emits proposed actions and never writes data itself. */
 object VoiceTaskInterpreter {
+    private val defaultClock: Clock get() = Clock.systemDefaultZone()
     private val weekdays = mapOf(
         "monday" to DayOfWeek.MONDAY, "tuesday" to DayOfWeek.TUESDAY,
         "wednesday" to DayOfWeek.WEDNESDAY, "thursday" to DayOfWeek.THURSDAY,
@@ -55,32 +69,47 @@ object VoiceTaskInterpreter {
         RegexOption.IGNORE_CASE
     )
 
-    fun interpret(utterance: String, tasks: List<TaskEntity>, today: LocalDate = LocalDate.now()): VoiceInterpretation {
-        val normalized = normalizeRecognizedText(utterance).trim()
+    fun interpret(utterance: String, tasks: List<TaskEntity>, clock: Clock = defaultClock): VoiceInterpretation {
+        return interpret(utterance, tasks, LocalDate.now(clock))
+    }
+
+    /** Compatibility overload for existing callers and deterministic date-based tests. */
+    fun interpret(utterance: String, tasks: List<TaskEntity>, today: LocalDate): VoiceInterpretation {
+        val normalized = normalizeRecognizedText(utterance)
+            .trim()
+            .replace(Regex("^(?:hi|hello|hey|okay|ok|so)[,!. ]+", RegexOption.IGNORE_CASE), "")
         if (normalized.isBlank()) return VoiceInterpretation.NotUnderstood("I didn't catch any words. Try speaking again.")
 
         parseTaskQuery(normalized, tasks, today)?.let { return VoiceInterpretation.Reply(it) }
 
-        val actions = mutableListOf<VoiceTaskAction>()
-        val clarifications = mutableListOf<String>()
-        for (clause in splitTasks(normalized)) {
-            val command = parseExistingTaskCommand(clause, tasks, today)
-            when (command) {
-                is CommandResult.Action -> actions += command.action
-                is CommandResult.Clarification -> clarifications += command.message
-                CommandResult.NotACommand -> {
-                    if (isLikelyTaskClause(clause, today)) {
-                        parseCreate(clause, today)?.let(actions::add)
-                    }
+        val clauses = splitTasks(collapseSelfCorrections(normalized))
+        if (clauses.size > 1) {
+            val proposals = mutableListOf<VoiceTaskProposal>()
+            for (clause in clauses) {
+                val proposal = if (isLikelyTaskClause(clause, today)) parseCreateProposal(clause, today) else null
+                if (proposal == null) {
+                    return VoiceInterpretation.NeedsClarification(
+                        "I couldn't confidently separate every task or its date/time. Please review the transcript and say each task more clearly."
+                    )
                 }
+                proposals += proposal
             }
+            // A proposal with a clarification still contains useful, reviewable
+            // information (for example, a title with an unclear date).
+            return VoiceInterpretation.Proposals(proposals)
         }
-
-        // Do not partially apply a multi-command utterance if any existing-task command is ambiguous.
-        if (clarifications.isNotEmpty()) return VoiceInterpretation.NeedsClarification(clarifications.distinct().joinToString(" "))
-        if (actions.isNotEmpty()) return VoiceInterpretation.Actions(actions)
+        val clause = clauses.single()
+        when (val command = parseExistingTaskCommand(clause, tasks, today)) {
+            is CommandResult.Action -> return VoiceInterpretation.Actions(listOf(command.action))
+            is CommandResult.Clarification -> return VoiceInterpretation.NeedsClarification(command.message)
+            CommandResult.NotACommand -> Unit
+        }
+        if (isLikelyTaskClause(clause, today)) {
+            val proposal = parseCreateProposal(clause, today)
+            if (proposal != null) return VoiceInterpretation.Proposal(proposal)
+        }
         return VoiceInterpretation.NotUnderstood(
-            "I couldn't identify a task. Say what needs doing; you can include a date, time, priority, or repeat schedule."
+            "I couldn't identify a task. Say the action and task name, with an optional date, time, or priority."
         )
     }
 
@@ -378,11 +407,17 @@ object VoiceTaskInterpreter {
         else -> token
     }
 
-    private fun parseCreate(clause: String, today: LocalDate): VoiceTaskAction.Create? {
+    private fun parseCreateProposal(clause: String, today: LocalDate): VoiceTaskProposal? {
         val metadata = parseDateAndTime(clause, today)
+        val hasFromNextWeek = Regex("\\bfrom\\s+(?:the\\s+)?next\\s+week\\b", RegexOption.IGNORE_CASE).containsMatchIn(clause)
+        val dateNeedsClarification = metadata.dateAmbiguous || hasFromNextWeek
         val dayPart = Regex("\\b(morning|afternoon|evening|night)\\b", RegexOption.IGNORE_CASE).find(clause)?.value
         if (Regex("\\b(?:that thing|something|some stuff|sometime|someday|whatever|not sure)\\b", RegexOption.IGNORE_CASE).containsMatchIn(clause)) return null
         var title = clause
+        if (hasFromNextWeek) {
+            title = title.replace(Regex("\\bfrom\\s+(?:the\\s+)?next\\s+week(?:['’]s)?(?:\\s+(?:on\\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))?", RegexOption.IGNORE_CASE), " ")
+                .replace(Regex("\\bfrom\\s+(?:the\\s+)?next\\s+week\\b", RegexOption.IGNORE_CASE), " ")
+        }
         metadata.dateToken?.let { title = title.replace(it, " ", ignoreCase = true) }
         metadata.timeToken?.let { title = title.replace(it, " ", ignoreCase = true) }
         dayPart?.let { title = title.replace(it, " ", ignoreCase = true) }
@@ -393,8 +428,8 @@ object VoiceTaskInterpreter {
             "high", "urgent", "important", "p1" -> 1
             "medium", "med", "p2" -> 2
             "low", "p3" -> 3
-            "p4" -> 4
-            else -> 4
+            "p4", "normal", "none" -> 4
+            else -> null
         }
         title = title.replace(Regex("\\b(?:high|medium|med|low|normal|none)\\s+priority\\b|\\b(?:urgent|important|p[1-4])\\b", RegexOption.IGNORE_CASE), " ")
 
@@ -415,9 +450,11 @@ object VoiceTaskInterpreter {
         val explicitReminder = Regex("\\b(?:remind me|set (?:a )?reminder|notify me)\\b", RegexOption.IGNORE_CASE).containsMatchIn(clause)
         title = title
             .replace(Regex("^(?:(?:hi|hello|hey|okay|ok|so|also|and|then|please)[,!. ]+)+", RegexOption.IGNORE_CASE), " ")
+            .replace(Regex("^(?:i\\s+)?need you to\\s+remind me\\s+(?:for|to)\\s+", RegexOption.IGNORE_CASE), " ")
             .replace(Regex("^(?:i\\s+(?:also\\s+)?|i\\s+)?(?:would\\s+)?(?:need|have|want|should|must|will)\\s+(?:to\\s+)?", RegexOption.IGNORE_CASE), " ")
             .replace(Regex("^(?:i am going to|i'm going to|i have got to|i've got to|i plan to)\\s+", RegexOption.IGNORE_CASE), " ")
             .replace(Regex("^(?:add|create|make|remember(?:\\s+to)?|remind me to|don't forget to|need to|have to)\\s+", RegexOption.IGNORE_CASE), " ")
+            .replace(Regex("^remind me\\s+for\\s+", RegexOption.IGNORE_CASE), " ")
             .replace(Regex("\\b(buy|get|submit|prepare|finish|complete|study|write|read|make|do|attend|schedule|book|print|pack|bring|organize|clean|review|fix|create|call|send|pay|visit|practice|collect|return|order|cancel|email|renew|drop off|fill out)\\s+(?:a|an|the|my)\\s+", RegexOption.IGNORE_CASE), "$1 ")
             .replace(Regex("^go\\s+(?:and\\s+)?(?=(?:buy|get|pick up|call|send|collect|return|order|bring|drop off)\\b)", RegexOption.IGNORE_CASE), " ")
             .replace(Regex("^(?:is|will be)\\s+(?:my|a|the)\\s+", RegexOption.IGNORE_CASE), " ")
@@ -425,6 +462,10 @@ object VoiceTaskInterpreter {
             .replace(Regex("^on\\s+", RegexOption.IGNORE_CASE), " ")
             .replace(Regex("\\b(?:please )?remind me to\\b", RegexOption.IGNORE_CASE), " ")
             .replace(Regex("\\b(?:by|at|around|before|on|for|due)\\s*$", RegexOption.IGNORE_CASE), " ")
+            .replace(Regex("\\b(?:from|the|a|an|my)\\s*$", RegexOption.IGNORE_CASE), " ")
+            .replace(Regex("\\b(?:and\\s+)?from\\s+(?:the\\s+)?['’]s?\\s*$", RegexOption.IGNORE_CASE), " ")
+            .replace(Regex("\\b(?:and)\\s*$", RegexOption.IGNORE_CASE), " ")
+            .replace(Regex("\\b(?:from|the)\\b(?=\\s*(?:and|$))", RegexOption.IGNORE_CASE), " ")
             .replace(Regex("\\s+"), " ")
             .trim(' ', ',', '.', ';', ':', '-', '—')
 
@@ -443,14 +484,24 @@ object VoiceTaskInterpreter {
             else word.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
         }
 
-        return VoiceTaskAction.Create(
+        val action = VoiceTaskAction.Create(
             title = title,
-            dueDate = (metadata.date ?: if (metadata.time != null || recurrence != null) today else null)?.toString(),
+            dueDate = metadata.date?.toString(),
             dueTime = metadata.time,
-            priority = priority,
+            priority = priority ?: 4,
             recurrenceRule = recurrence,
             reminderEnabled = explicitReminder && metadata.time != null,
             description = dayPart?.let { "Preferred time of day: ${it.lowercase(Locale.ROOT)}" }
+        )
+        return VoiceTaskProposal(
+            action = action,
+            title = title,
+            dueDate = metadata.date,
+            dueTime = metadata.time,
+            priority = priority,
+            clarification = if (dateNeedsClarification) {
+                "I heard a date phrase, but it may describe when this starts rather than its deadline. Please confirm the due date before applying."
+            } else null
         )
     }
 
@@ -458,15 +509,24 @@ object VoiceTaskInterpreter {
         val date: LocalDate?,
         val time: String?,
         val dateToken: String?,
-        val timeToken: String?
+        val timeToken: String?,
+        val dateAmbiguous: Boolean = false
     )
 
     private fun parseDateAndTime(text: String, today: LocalDate): ParsedDateTime {
-        val dateMatch = datePattern.find(text)
-        val date = dateMatch?.value?.let { parseDateToken(it, today) }
+        val dateMatches = datePattern.findAll(text).toList()
+        val startWindow = Regex("\\bfrom\\s+(?:the\\s+)?next\\s+week\\b", RegexOption.IGNORE_CASE).find(text)
+        val dueDateMatches = dateMatches.filterNot { match ->
+            startWindow != null && match.range.first >= startWindow.range.first &&
+                match.value.equals("next week", ignoreCase = true)
+        }
+        val dateMatch = dueDateMatches.firstOrNull()
+        val parsedDates = dueDateMatches.mapNotNull { parseDateToken(it.value, today) }.distinct()
+        val dateAmbiguous = parsedDates.size > 1
+        val date = if (dateAmbiguous || startWindow != null) null else dateMatch?.value?.let { parseDateToken(it, today) }
         val timeMatch = timePattern.find(text)
         val time = timeMatch?.let(::parseTimeMatch)
-        return ParsedDateTime(date, time, dateMatch?.value, timeMatch?.value)
+        return ParsedDateTime(date, time, dateMatch?.value, timeMatch?.value, dateAmbiguous)
     }
 
     private fun parseDateToken(token: String, today: LocalDate): LocalDate? {
@@ -526,21 +586,31 @@ object VoiceTaskInterpreter {
     }
 
     private fun splitTasks(raw: String): List<String> {
+        val dateLead = "(?:the\\s+)?(?:day\\s+after\\s+tomorrow|tomorrow|today|next\\s+week(?:['’]s)?(?:\\s+(?:on\\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))?|next\\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|this\\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|in\\s+\\d+\\s+days?|(?:on\\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))"
         var text = raw
+            .replace(Regex("\\b(?:um+|uh+|erm+|hmm+)\\b[, ]*", RegexOption.IGNORE_CASE), " ")
             .replace(Regex("a\\.m\\.?", RegexOption.IGNORE_CASE), "am")
             .replace(Regex("p\\.m\\.?", RegexOption.IGNORE_CASE), "pm")
             .replace(Regex("\\b(?:and also|and then|after that|due to which|because(?: of which| of that)?|which means)\\b", RegexOption.IGNORE_CASE), ";")
             .replace(Regex("[.!?;\\n]+"), ";")
+        // A date phrase following a coordinator starts a new task only when
+        // the prior clause already contains task text. Dates inside a task
+        // title/description remain attached to their current clause.
+        text = text.replace(
+            Regex("(?:,|\\band\\b)\\s*(?=$dateLead\\b)", RegexOption.IGNORE_CASE),
+            "; "
+        )
         val actionLookahead = actionVerbs.filterNot { it == "go" }.joinToString("|") { Regex.escape(it) }
         text = text.replace(
             Regex("\\bgo\\s+and\\s+(?=(?:$actionLookahead)\\b)", RegexOption.IGNORE_CASE),
             ""
         )
-        val starterAlternatives = (listOf(
+        val starterAlternatives = listOf(
             "i need", "i also need", "also need", "i have", "i also have", "also have", "i have to", "i have got to", "i should", "i must", "i will", "i would need", "i want to",
             "please add", "add", "create", "remind me to", "don't forget to", "mark", "set", "change",
             "update", "complete", "finish", "reschedule", "move", "push"
-        ) + actionVerbs).distinct().joinToString("|") { Regex.escape(it) }
+        ).distinct().joinToString("|") { Regex.escape(it) }
+        val actionStarters = actionVerbs.joinToString("|") { Regex.escape(it) }
         text = text.replace(
             Regex("\\s+and\\s+(?=(?:$starterAlternatives)\\b)", RegexOption.IGNORE_CASE),
             ";"
@@ -567,18 +637,53 @@ object VoiceTaskInterpreter {
             Regex(",\\s*(?=(?:$starterAlternatives)\\b)", RegexOption.IGNORE_CASE),
             ";"
         )
+        // A comma before an action verb is a useful list boundary. Plain
+        // “and + verb” is intentionally left intact (e.g. “plan and organize
+        // an event”), avoiding a common false split of one task title.
+        text = text.replace(
+            Regex(",\\s*(?=(?:$actionStarters)\\b)", RegexOption.IGNORE_CASE),
+            ";"
+        )
         val pieces = text.split(';').map { it.trim().trim(',', ' ') }.filter(String::isNotBlank)
         val merged = mutableListOf<String>()
-        val dateLeadIn = Regex("^(?:today|tomorrow|day after tomorrow|next week(?:\\s+(?:$weekdayNames))?|next\\s+(?:$weekdayNames)|this\\s+(?:$weekdayNames)|$weekdayNames)(?:\\s+(?:morning|afternoon|evening|night))?$", RegexOption.IGNORE_CASE)
+        val dateLeadIn = Regex("^(?:the\\s+)?(?:today|tomorrow|day after tomorrow|next week(?:\\s+(?:$weekdayNames))?|next\\s+(?:$weekdayNames)|this\\s+(?:$weekdayNames)|$weekdayNames)(?:\\s+(?:morning|afternoon|evening|night))?(?:\\s+at\\s+\\d{1,2}(?::\\d{2})?\\s*(?:am|pm))?$", RegexOption.IGNORE_CASE)
+        var pendingDateLead: String? = null
         for (piece in pieces) {
-            if (merged.isNotEmpty() && dateLeadIn.matches(merged.last()) && Regex("^(?:i|we)\\s+", RegexOption.IGNORE_CASE).containsMatchIn(piece)) {
-                merged[merged.lastIndex] = "${merged.last()} $piece"
+            if (Regex("^(?:and\\s+)?from\\s+(?:the\\s+)?next\\s+week$", RegexOption.IGNORE_CASE).matches(piece)) {
+                pendingDateLead = piece
+                continue
+            }
+            val attachedPiece = if (pendingDateLead != null && Regex("^(?:i|we)\\s+", RegexOption.IGNORE_CASE).containsMatchIn(piece)) {
+                "$pendingDateLead $piece".also { pendingDateLead = null }
+            } else piece
+            if (merged.isNotEmpty() && dateLeadIn.matches(merged.last()) && Regex("^(?:i|we)\\s+", RegexOption.IGNORE_CASE).containsMatchIn(attachedPiece)) {
+                merged[merged.lastIndex] = "${merged.last()} $attachedPiece"
             } else {
-                merged += piece
+                merged += attachedPiece
             }
         }
-        return merged
+        return merged.map(::stripTrailingSpeechFiller).filter(String::isNotBlank)
     }
+
+    /** Collapse exact repeated obligation prefixes caused by speech restarts. */
+    private fun collapseSelfCorrections(raw: String): String {
+        val repeatedPrefix = Regex(
+            "(\\b(?:i|we)\\s+(?:have|need(?:\\s+to)?|want|should|must|will)\\s+(?:(?:my|the|a|an)\\s+)?[\\p{L}\\p{N}]+)\\s+\\1\\b",
+            RegexOption.IGNORE_CASE
+        )
+        var result = raw
+        var previous: String
+        do {
+            previous = result
+            result = repeatedPrefix.replace(result, "$1")
+        } while (result != previous)
+        return result
+    }
+
+    /** Remove only dangling spoken fillers at a clause edge, preserving title wording. */
+    private fun stripTrailingSpeechFiller(clause: String): String = clause
+        .replace(Regex("\\s+(?:how\\s+long(?:\\s+that)?|you\\s+know|i\\s+mean)$", RegexOption.IGNORE_CASE), "")
+        .trim()
 
     private fun normalizeRecognizedText(text: String): String {
         var normalized = text
