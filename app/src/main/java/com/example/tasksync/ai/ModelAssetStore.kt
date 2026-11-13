@@ -30,8 +30,8 @@ object ModelAssetStore {
             appContext.assets.openFd("$ASSET_DIRECTORY/$name").use { it.length }
         }
         val expectedHashes = mapOf(
-            "encoder_model.onnx" to "0BDD09EAED25CA079B581CC0BA10AADA1921778332376D91A74D7C405ED290A4",
-            "decoder_model.onnx" to "CB7A288F31D1F16FB431FCE0531FBD9E8A3E280CA5406C7E18881B90672026C5",
+            "encoder_model.onnx" to "D963DA7E3A8E7CFAB9BDFCF4C431463489316AD7BCBDB893CC0FB70362E25D26",
+            "decoder_model.onnx" to "D71E9299702EAEAAE5A3265027CD8EE72DE7D10081F3E0DAF6CE85A600E51C1F",
             "spiece.model" to "D60ACB128CF7B7F2536E8F38A5B18A05535C9E14C7A355904270E15B0945EA86"
         )
         val totalBytes = lengths.values.sum()
