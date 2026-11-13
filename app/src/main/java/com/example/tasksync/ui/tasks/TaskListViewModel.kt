@@ -3,16 +3,14 @@ package com.example.tasksync.ui.tasks
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.room.withTransaction
 import com.example.tasksync.data.local.AppDatabase
 import com.example.tasksync.data.local.entity.TaskEntity
 import com.example.tasksync.data.local.entity.ProjectEntity
 import com.example.tasksync.data.local.entity.SubtaskEntity
-import com.example.tasksync.ui.assistant.VoiceTaskAction
-import com.example.tasksync.ui.assistant.VoiceTaskBrain
-import com.example.tasksync.ui.assistant.VoiceInterpretation
 import com.example.tasksync.data.repository.ProjectRepository
 import com.example.tasksync.data.repository.TaskRepository
+import com.example.tasksync.ai.ProposedVoiceAction
+import com.example.tasksync.ai.VoiceActionType
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.SharingStarted
@@ -21,14 +19,6 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 class TaskListViewModel(application: Application) : AndroidViewModel(application) {
-
-    private sealed interface VoiceUndoAction {
-        data class Restore(val task: TaskEntity) : VoiceUndoAction
-        data class Delete(val taskId: String) : VoiceUndoAction
-        data class DeleteSubtask(val subtask: SubtaskEntity) : VoiceUndoAction
-    }
-
-    private var lastVoiceUndo: List<VoiceUndoAction> = emptyList()
 
     private val database: AppDatabase = AppDatabase.getDatabase(application)
     private val repository: TaskRepository
@@ -108,122 +98,66 @@ class TaskListViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch { repository.setTaskStatus(task.id, status) }
     }
 
-    fun executeVoiceActions(actions: List<VoiceTaskAction>, onFinished: (String, Boolean) -> Unit) {
-        viewModelScope.launch {
-            val undoActions = mutableListOf<VoiceUndoAction>()
-            var created = 0
-            var updated = 0
-            var completed = 0
-            var reopened = 0
-            var deleted = 0
-            var subtasksAdded = 0
-            try {
-                database.withTransaction {
-                    actions.forEach { action ->
-                when (action) {
-                    is VoiceTaskAction.Create -> {
-                        val task = repository.createTask(
-                            title = action.title,
-                            description = action.description,
-                            dueDate = action.dueDate,
-                            dueTime = action.dueTime,
-                            priority = action.priority,
-                            reminderEnabled = action.reminderEnabled,
-                            recurrenceRule = action.recurrenceRule
-                        )
-                        undoActions += VoiceUndoAction.Delete(task.id)
-                        created++
-                    }
-                    is VoiceTaskAction.Update -> {
-                        repository.updateTask(action.after)
-                        undoActions += VoiceUndoAction.Restore(action.before)
-                        updated++
-                    }
-                    is VoiceTaskAction.Complete -> {
-                        val before = repository.getTaskById(action.task.id) ?: action.task
-                        val nextOccurrence = repository.markTaskCompleted(action.task.id)
-                        undoActions += VoiceUndoAction.Restore(before)
-                        nextOccurrence?.let { undoActions += VoiceUndoAction.Delete(it.id) }
-                        completed++
-                    }
-                    is VoiceTaskAction.Reopen -> {
-                        undoActions += VoiceUndoAction.Restore(action.task)
-                        repository.reopenTask(action.task.id)
-                        reopened++
-                    }
-                    is VoiceTaskAction.Delete -> {
-                        undoActions += VoiceUndoAction.Restore(action.task)
-                        repository.deleteTask(action.task)
-                        deleted++
-                    }
-                    is VoiceTaskAction.AddSubtask -> {
-                        val dao = AppDatabase.getDatabase(getApplication()).taskDao()
-                        val subtask = SubtaskEntity(
-                            id = "subtask_${System.currentTimeMillis()}_${(1000..9999).random()}",
-                            taskId = action.task.id,
-                            title = action.title.trim(),
-                            sortOrder = dao.getSubtasksForTask(action.task.id).first().size
-                        )
-                        dao.insertSubtask(subtask)
-                        undoActions += VoiceUndoAction.DeleteSubtask(subtask)
-                        subtasksAdded++
-                    }
-                }
-                    }
-                }
-            } catch (_: Exception) {
-                onFinished("I couldn't save those changes. Please review and try again.", false)
-                return@launch
-            }
-            lastVoiceUndo = undoActions
-            val summary = buildList {
-                if (created > 0) add("Added $created task${if (created == 1) "" else "s"}")
-                if (updated > 0) add("Updated $updated task${if (updated == 1) "" else "s"}")
-                if (completed > 0) add("Completed $completed task${if (completed == 1) "" else "s"}")
-                if (reopened > 0) add("Reopened $reopened task${if (reopened == 1) "" else "s"}")
-                if (deleted > 0) add("Deleted $deleted task${if (deleted == 1) "" else "s"}")
-                if (subtasksAdded > 0) add("Added $subtasksAdded checklist item${if (subtasksAdded == 1) "" else "s"}")
-            }.joinToString(" · ")
-            onFinished(summary.ifBlank { "Done." }, true)
-        }
-    }
-
-    fun interpretVoiceTranscript(
-        transcript: String,
-        tasks: List<TaskEntity>,
-        onFinished: (VoiceInterpretation) -> Unit
-    ) {
-        viewModelScope.launch {
-            onFinished(VoiceTaskBrain.interpret(transcript, tasks))
-        }
-    }
-
-    fun applyVoiceActions(actions: List<VoiceTaskAction>, onFinished: (String, Boolean) -> Unit) {
-        executeVoiceActions(actions, onFinished)
-    }
-
-    fun undoLastVoiceActions(onFinished: (String) -> Unit) {
-        viewModelScope.launch {
-            val undoActions = lastVoiceUndo.asReversed()
-            if (undoActions.isEmpty()) {
-                onFinished("There is nothing to undo.")
-                return@launch
-            }
-            undoActions.forEach { action ->
-                when (action) {
-                    is VoiceUndoAction.Restore -> repository.restoreTask(action.task)
-                    is VoiceUndoAction.Delete -> repository.getTaskById(action.taskId)?.let { repository.deleteTask(it) }
-                    is VoiceUndoAction.DeleteSubtask -> AppDatabase.getDatabase(getApplication()).taskDao().deleteSubtask(action.subtask)
-                }
-            }
-            lastVoiceUndo = emptyList()
-            onFinished("Undid the last voice action.")
-        }
-    }
-
     fun deleteTask(task: TaskEntity) {
         viewModelScope.launch {
             repository.deleteTask(task)
+        }
+    }
+
+    /** Called only by the voice review's explicit Apply button. */
+    suspend fun applyConfirmedVoiceActions(actions: List<ProposedVoiceAction>) {
+        val current = allTasks.value.associateBy { it.id }
+        val rollback = mutableListOf<suspend () -> Unit>()
+        try {
+            actions.forEach { action ->
+                when (action.type) {
+                    VoiceActionType.CREATE -> {
+                        val created = repository.createTask(
+                    title = action.title.trim(),
+                    description = action.details?.takeIf(String::isNotBlank)
+                        ?: action.whenText?.takeIf { action.dueDate == null }?.let { "When: $it" },
+                    dueDate = action.dueDate,
+                    dueTime = action.dueTime,
+                    priority = action.priority ?: 4,
+                            projectId = action.project?.let { name -> projects.value.firstOrNull { it.name.equals(name, true) }?.id }
+                        )
+                        rollback += { repository.deleteTask(created) }
+                    }
+                    VoiceActionType.UPDATE -> {
+                        val old = action.targetTaskId?.let(current::get) ?: error("The selected target task no longer exists.")
+                    val description = action.details?.takeIf(String::isNotBlank)
+                        ?: action.whenText?.takeIf { action.dueDate == null }?.let { "When: $it" }
+                        ?: old.description
+                        repository.updateTask(old.copy(
+                        title = action.title.takeIf(String::isNotBlank) ?: old.title,
+                        description = description,
+                        dueDate = action.dueDate ?: old.dueDate,
+                        dueTime = action.dueTime ?: old.dueTime,
+                        priority = action.priority ?: old.priority,
+                        projectId = action.project?.let { name -> projects.value.firstOrNull { it.name.equals(name, true) }?.id } ?: old.projectId
+                        ))
+                        rollback += { repository.updateTask(old) }
+                    }
+                    VoiceActionType.COMPLETE -> {
+                        val id = action.targetTaskId ?: error("Missing task target.")
+                        val old = current[id] ?: error("The selected target task no longer exists.")
+                        val nextOccurrence = repository.markTaskCompleted(id)
+                        rollback += {
+                            repository.reopenTask(id, old.status)
+                            nextOccurrence?.let { repository.deleteTask(it) }
+                        }
+                    }
+                    VoiceActionType.DELETE -> {
+                        val task = action.targetTaskId?.let(current::get) ?: error("The selected target task no longer exists.")
+                        repository.deleteTask(task)
+                        rollback += { repository.restoreTask(task) }
+                    }
+                    VoiceActionType.NONE -> Unit
+                }
+            }
+        } catch (error: Throwable) {
+            rollback.asReversed().forEach { undo -> runCatching { undo() } }
+            throw error
         }
     }
 

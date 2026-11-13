@@ -205,11 +205,7 @@ fun TasksScreen(viewModel: TaskListViewModel = viewModel()) {
         if (showVoiceAssistant) {
             VoiceTaskAssistantDialog(
                 onDismiss = { showVoiceAssistant = false },
-                onRecognized = { transcript, finish ->
-                    viewModel.interpretVoiceTranscript(transcript, allTasks, finish)
-                },
-                onApply = viewModel::applyVoiceActions,
-                onUndo = { finish -> viewModel.undoLastVoiceActions(finish) }
+                viewModel = viewModel
             )
         }
     }

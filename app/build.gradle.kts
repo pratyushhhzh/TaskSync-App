@@ -1,22 +1,20 @@
-import java.util.Properties
-
 plugins {
     alias(libs.plugins.android.application)
     id("org.jetbrains.kotlin.plugin.compose")
-    id("org.jetbrains.kotlin.plugin.serialization")
     id("com.google.devtools.ksp")
 }
-
-val localProperties = Properties().apply {
-    val file = rootProject.file("local.properties")
-    if (file.exists()) file.inputStream().use { load(it) }
-}
-
-fun buildConfigString(value: String) = "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
 
 android {
     namespace = "com.example.tasksync"
     compileSdk = 35
+    ndkVersion = "30.0.16248370"
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "4.1.2"
+        }
+    }
 
     defaultConfig {
         applicationId = "com.example.tasksync"
@@ -26,8 +24,13 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        buildConfigField("String", "SUPABASE_URL", buildConfigString(localProperties.getProperty("supabase.url", "")))
-        buildConfigField("String", "SUPABASE_ANON_KEY", buildConfigString(localProperties.getProperty("supabase.anonKey", "")))
+
+        externalNativeBuild {
+            cmake {
+                arguments += listOf("-DANDROID_STL=c++_shared")
+                targets += listOf("tasksync_sentencepiece")
+            }
+        }
     }
 
     buildTypes {
@@ -46,6 +49,10 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    androidResources {
+        noCompress += listOf("onnx", "model")
     }
 
 }
@@ -73,17 +80,8 @@ dependencies {
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
 
-    // Ktor / Networking / Serialization
-    implementation(libs.ktor.client.core)
-    implementation(libs.ktor.client.cio)
-    implementation(libs.ktor.client.content.negotiation)
-    implementation(libs.ktor.serialization.kotlinx.json)
-    implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
-
-    // Supabase Auth
-    implementation(platform(libs.supabase.bom))
-    implementation(libs.supabase.auth)
+    implementation(libs.onnxruntime.android)
 
     // Testing
     testImplementation(libs.junit)

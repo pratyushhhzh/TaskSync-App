@@ -6,9 +6,9 @@ This document is a compact handoff for someone new to TaskSync. It describes wha
 
 ## 1. What TaskSync is
 
-TaskSync is an Android task manager intended to grow into a personal task assistant. Its first useful product is a conventional to-do app: users can create and organize tasks, set due dates and times, priorities, reminders, and recurrence, and keep project work grouped. The main differentiating MVP goal is a **voice assistant** that turns natural speech into accurate task actions, including multiple tasks and changes to existing tasks, while asking the user to review uncertain interpretations before saving.
+TaskSync is an Android task manager intended to grow into a personal task assistant. Its current voice stage is **speech-to-text only**: capture the user's complete utterance, let them review and edit it, and confirm the transcript. A separate brain stage for summarizing and distributing tasks is future work.
 
-The app is currently local-first. Tasks and projects are stored in the device's Room database. Supabase libraries/configuration and schema/setup artifacts exist, but the current task flow does not sync task or project data to Supabase.
+The app is local-first. Tasks and projects are stored in the device's Room database. The app does not use accounts or remote task sync.
 
 ## 2. Technology and architecture verified in this repository
 
@@ -16,10 +16,9 @@ The app is currently local-first. Tasks and projects are stored in the device's 
 - UI built with **Jetpack Compose** and Material 3.
 - Navigation Compose provides the bottom-tab navigation.
 - **Room** is the local persistence layer, with DAO, entity, database, and repository layers.
-- Android's `SpeechRecognizer` service supplies speech-to-text through `SpeechCaptureController`; the app's command interpretation is local Kotlin rule-based code.
+- Android's `SpeechRecognizer` service supplies speech-to-text through `SpeechCaptureController`; the active app does not interpret transcripts or create tasks from voice.
 - Android alarm/notification components schedule task reminders.
 - Gradle Kotlin DSL build files; current app configuration uses `compileSdk 35`, `targetSdk 35`, and `minSdk 26`.
-- Supabase Auth and Ktor dependencies/configuration are present. `AuthRepository` is currently a nonfunctional local-phase stub; the presence of those dependencies or login/register screens must not be described as finished authentication or data syncing.
 
 Main code areas:
 
@@ -27,8 +26,8 @@ Main code areas:
 - `app/src/main/java/com/example/tasksync/data/local/` — Room database, DAOs, and entities.
 - `app/src/main/java/com/example/tasksync/data/repository/` — task and project persistence operations.
 - `app/src/main/java/com/example/tasksync/data/reminder/` — Android reminder scheduling and delivery.
-- `app/src/main/java/com/example/tasksync/ui/assistant/` — speech capture, intent classification, local voice interpreter, proposal UI.
-- `app/src/test/java/com/example/tasksync/VoiceTaskInterpreterTest.kt` — interpreter unit and regression tests.
+- `app/src/main/java/com/example/tasksync/ui/assistant/` — speech capture and transcript review UI.
+- `backup/local-voice-parser/` — archived local parser and its tests; not compiled or connected to the active voice flow.
 
 ## 3. What the app has today
 
@@ -53,58 +52,44 @@ Main code areas:
 
 ### Voice assistant
 
-Current path: Android speech recognition → transcript → `VoiceTaskBrain` / `VoiceTaskInterpreter` → structured proposals or recognized existing-task actions → review dialog → explicit Apply → view model/repository writes to Room.
+Current path: Android speech recognition → accumulated transcript → editable review → explicit transcript confirmation. The flow stops there; it does not call the task parser or write tasks.
 
-- Speech capture can listen across successive recognition segments until the user explicitly stops. Speech-to-text quality and service availability depend on Android/device recognition services; this is not a custom offline speech model.
-- The interpreter is **local, deterministic, rule-based Kotlin**, not a trained AI model, language model, or self-learning system. There is no external AI API or paid inference service in this flow.
-- Create proposals can extract concise titles and explicit dates, times, priorities, recurrence, and reminder intent. Relative dates use an injectable `Clock` and its timezone for deterministic interpretation.
-- Multi-task transcripts are segmented into individual proposals; recognized filler, some speech restarts, and ambiguous “from next week” date language have regression coverage.
-- The review dialog shows proposed operations and supports manual editing before the user applies them. Interpretation itself does not write to Room.
-- Existing rule support also includes a limited set of task commands such as completion/reopen/delete, subtasks, and updates to matched tasks' date/time, priority, recurrence, and description. This is pattern-based support and must not be mistaken for robust conversational understanding.
-- A command such as a medication reminder with an explicit time can propose a reminder at that time without inventing a due date. If the user says “from next week,” the interpreter should leave the date blank and request review rather than silently treating it as a deadline.
+- Speech capture listens across successive recognition segments until the user explicitly stops. The transcript is editable and confirmed before the dialog ends. Speech-to-text quality and service availability depend on Android/device recognition services; this is not a custom offline speech model.
+- The old local interpreter is archived in `backup/local-voice-parser/`; its sources and tests are not in `app/src` and are not active.
+- Confirming a transcript does not create, update, complete, or delete tasks. Voice-created task behavior is intentionally unavailable until a separate brain stage is designed.
 
 ## 4. Voice-brain design and current phase status
 
-The planned “brain” is currently a **language-understanding pipeline**, not a neural model. The near-term strategy is to improve the on-device rule-based interpreter because TaskSync must work for ordinary/older Android phones and a small initial user group without a paid service or cloud dependency.
+The brain stage is not implemented. Keep it separate from speech capture: the current stage produces a confirmed text transcript, and a future stage may summarize it, split tasks, extract details, and propose actions.
 
 Pipeline responsibilities to keep distinct:
 
-1. **Speech capture/transcription** — Android recognition service produces text.
-2. **Transcript cleanup** — normalize punctuation, common recognition variants, and disfluencies without changing meaning.
-3. **Intent classification** — determine create, update/reschedule, complete, delete, query, etc.
-4. **Clause segmentation** — split multiple task statements while preserving which date/time/priority belongs to which task; avoid splitting titles or speech self-corrections.
-5. **Title and field extraction** — produce concise titles and optional due date, time, priority, recurrence, reminder, and other supported fields.
-6. **Existing-task resolution** — match update/completion commands to saved tasks and refuse to guess when multiple matches are plausible.
-7. **Validation and review plan** — represent uncertainty explicitly and show proposed changes for user correction/confirmation.
-8. **Execution** — only after confirmation, call the existing view-model/repository flow to write the action to Room and schedule/cancel reminders.
+1. **Speech capture/transcription (active)** — Android recognition service produces text until the user stops.
+2. **Transcript review (active)** — user can edit and confirm the complete transcript.
+3. **Brain and action proposal (future)** — summarize, divide tasks, extract titles/details, resolve references, and prepare proposed actions.
+4. **Execution (future voice stage)** — only after the user reviews and confirms proposed task actions, call the existing repository to write to Room.
 
-### Completed work in this direction
+### Current implementation status
 
-- A structured proposal/action representation exists and keeps parsing separate from persistence.
-- Single-task parsing and the initial multi-task parsing phases exist.
-- The parser has rule support for common relative dates, explicit times, priorities, reminders, recurrence, and several task commands.
-- Recent real-device reproduction was traced and fixed: dangling conversational filler is removed at clause edges; repeated obligation prefixes are collapsed; medication reminder phrasing is cleaned; “from next week” is not used as a guessed due date and is flagged for confirmation.
-- Unit regression tests cover the supplied real transcript plus medication reminders, self-correction, filler, ambiguous date language, ordinary task parsing, multi-task metadata, and injected-clock/timezone behavior.
-- The current requested verification completed successfully: `:app:testDebugUnitTest :app:assembleDebug` — **BUILD SUCCESSFUL**, including 19 unit tests and the debug APK build. This is code/build verification, not a claim that all voice inputs work perfectly on physical devices.
+- Speech capture accumulates segments, shows partial text, and provides editable final transcript confirmation.
+- The rule-based parser and its regression tests are archived as reference only.
+- The task summarization/distribution model, proposal review, and voice-driven task execution stage are not implemented in the active flow.
 
 ### Still to achieve for the voice MVP
 
-1. **Reliable task reference resolution.** Improve matching of natural references (“move my football game”) to existing tasks, including typo tolerance, similar names, and explicit ambiguity when more than one task matches.
-2. **Safer update planning.** Ensure updates never fall through into task creation; require a confident match before changing, completing, reopening, or deleting a task. Keep destructive actions especially clear in review.
-3. **Better natural-language extraction.** Expand titles and metadata rules for common phrasing, corrections, lists, conjunctions, and speech-recognition errors without over-stripping meaningful task words.
-4. **Clarification interaction.** Let the assistant ask for missing/unclear details (date, time, priority, or which task), retain context for the answer, then update the proposal before saving. This follow-up conversational loop is not complete.
-5. **Broader evaluation set.** Build a maintained corpus of representative transcripts and expected structured operations, including hard negatives and ambiguous examples. Track exact title/date/time/priority/action accuracy and regression results rather than relying on a few examples.
-6. **Device testing.** Re-test the whole flow on physical Android devices: microphone permission, long pauses, recognition segment boundaries, repeated listening, service errors, review edits, Apply/Undo, reminders, and date/time behavior. Unit tests cannot verify OEM speech-service behavior.
-7. **Graceful failure and user trust.** Show the heard transcript, identify what is uncertain, never fabricate metadata, and ensure no operation is persisted before confirmation.
-8. **Decide later whether to train or ship a model.** There is no custom-trained model now. First collect consented, privacy-conscious examples and establish an accuracy baseline; only then compare improved rules with an optional on-device model. Any model must meet offline, device compatibility, size, privacy, and accuracy needs before replacing the rules.
+1. **Validate speech-to-text on real devices.** Check long pauses, segment stitching, service errors, permissions, and English (India) recognition.
+2. **Choose the future brain approach.** Define model/provider, cost, privacy, offline expectations, and app-size limits before implementation.
+3. **Design transcript-to-proposal contract.** Specify input context, output schema, uncertainty behavior, and how the user reviews proposed task actions.
+4. **Build an evaluation set.** Record representative transcripts and expected summaries/task splits, including ambiguous and adversarial instructions.
+5. **Connect execution only after confirmation.** Keep task writes behind the established review and confirmation boundary.
 
 ## 5. Broader product goals and sequencing
 
 ### Near-term focus
 
 - Finish and polish the Android app's personal task manager and project section.
-- Improve the voice MVP until it reliably creates multiple tasks and safely updates existing ones, with confirmation and correction.
-- Keep voice interpretation local and available without a subscription or server inference requirement.
+- Finish the speech-to-text stage and preserve the complete confirmed transcript.
+- Design the separate brain stage before connecting voice to task creation or updates.
 
 ### Later planned work
 
@@ -112,7 +97,6 @@ Pipeline responsibilities to keep distinct:
 - Account and cross-device behavior, once the product decides which personal data should sync. The prior direction was to prioritize project/team data for initial collaboration and consider personal-task sync in a later release; this is a product plan, not implemented behavior.
 - Revisit model-based understanding only after evaluation and device feasibility have been measured.
 
-No Supabase project schema, auth configuration, or included setup guide alone means collaboration is operational. Verify actual app integration and end-to-end sync before marking that milestone complete.
 
 ## 6. Data model and local persistence
 
@@ -126,12 +110,10 @@ The local database is `tasksync_database`, currently schema version 4, with migr
 
 ## 7. Important limitations and cautions for new contributors
 
-- The rule parser is not general intelligence. It will have edge cases; add regression tests for every real failure before changing heuristics.
-- Android speech recognition is separate from the local interpreter. A transcript that is already wrong can affect the result, but the supplied recent failure was reproduced from the exact transcript and its parser errors were in TaskSync's own code.
-- Avoid overlapping regex rules that steal dates from another task or create extra tasks from one sentence. Preserve dates/times with their intended clause.
-- Missing values are meaningful. Never turn an absent date, time, or priority into a guessed value. Priority 4 is the existing database/UI default representing “none”; the proposal's nullable priority is the signal that the user did not state one.
-- Keep parsing pure: no Room writes, reminder scheduling, or destructive operations from interpretation. Only the confirmed action execution path may mutate data.
-- Preserve the existing Compose review and manual-edit flow unless a change is necessary for a clearly specified interaction.
+- Keep speech capture/transcript review separate from the future brain and task-action layers.
+- The archived local parser is reference material, not an active dependency; do not restore it into `app/src` unless requested.
+- No voice transcript is persisted as a task in the current stage.
+- Keep Room writes, reminder scheduling, and task changes out of speech capture.
 - Avoid external AI APIs, paid services, or new dependencies unless the product direction explicitly changes.
 - The repository currently contains local development changes. Check `git status` before editing and do not discard another contributor's work.
 
@@ -143,12 +125,11 @@ The local database is `tasksync_database`, currently schema version 4, with migr
 | Task and calendar UI | `ui/tasks/TasksScreen.kt`, `ui/tasks/InboxScreen.kt`, `ui/tasks/CalendarScreen.kt`, `ui/tasks/TaskDetailBottomSheet.kt` |
 | Task/project Kanban | `ui/projects/ProjectsScreen.kt`, `ui/projects/ProjectKanbanBoard.kt`, `ui/projects/ProjectCreationDialog.kt` |
 | Task entities/database/DAO | `data/local/entity/TaskEntity.kt`, `ProjectEntity.kt`, `SubtaskEntity.kt`, `data/local/AppDatabase.kt`, `data/local/dao/` |
-| Persistence and confirmed voice execution | `data/repository/TaskRepository.kt`, `ProjectRepository.kt`, `ui/tasks/TaskListViewModel.kt` |
-| Voice capture and interpretation | `ui/assistant/SpeechCaptureController.kt`, `VoiceIntentClassifier.kt`, `VoiceTaskBrain.kt`, `VoiceTaskInterpreter.kt`, `VoiceTaskAssistantDialog.kt` |
+| Persistence | `data/repository/TaskRepository.kt`, `ProjectRepository.kt`, `ui/tasks/TaskListViewModel.kt` |
+| Active voice capture/transcript review | `ui/assistant/SpeechCaptureController.kt`, `VoiceTaskAssistantDialog.kt` |
+| Archived local parser | `backup/local-voice-parser/` |
 | Reminders | `data/reminder/TaskReminderScheduler.kt`, `TaskReminderReceiver.kt` |
-| Interpreter tests | `app/src/test/java/com/example/tasksync/VoiceTaskInterpreterTest.kt` |
-| Supabase setup artifact | `SUPABASE_SETUP.md`, `supabase/` (setup/schema artifacts only; not proof of active sync) |
 
 ## 9. Current one-sentence status
 
-TaskSync is a runnable local-first Android to-do/project app with a rule-based, review-before-save voice assistant and reminder support; the main unfinished product work is making multi-task voice interpretation and existing-task updates trustworthy across varied real speech, then adding the clarification loop and later project collaboration/sync.
+TaskSync is a local-first Android to-do/project app whose active voice flow captures and confirms editable text only; the task-understanding brain and voice-driven task actions are future work.
