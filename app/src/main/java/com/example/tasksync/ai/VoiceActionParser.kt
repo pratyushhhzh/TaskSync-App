@@ -20,7 +20,8 @@ data class ProposedVoiceAction(
     val priority: Int? = null,
     val project: String? = null,
     val details: String? = null,
-    val warning: String? = null
+    val warning: String? = null,
+    val titleWarning: String? = null
 )
 
 data class VoiceParseResult(val actions: List<ProposedVoiceAction>, val errors: List<String>)
@@ -29,7 +30,12 @@ data class VoiceParseResult(val actions: List<ProposedVoiceAction>, val errors: 
 object VoiceActionParser {
     private val allowedFields = setOf("action", "target", "title", "when", "priority", "project", "details", "repeat", "recurrence")
 
-    fun parse(output: String, tasks: List<TaskEntity>, today: LocalDate = LocalDate.now()): VoiceParseResult {
+    fun parse(
+        output: String,
+        tasks: List<TaskEntity>,
+        today: LocalDate = LocalDate.now(),
+        transcript: String? = null
+    ): VoiceParseResult {
         if (output.isBlank()) return VoiceParseResult(emptyList(), listOf("The model returned an empty response."))
         val actions = mutableListOf<ProposedVoiceAction>()
         val errors = mutableListOf<String>()
@@ -95,8 +101,11 @@ object VoiceActionParser {
                 date != null && LocalDate.parse(date.first).isBefore(today) -> "The interpreted date is in the past; review it before applying."
                 else -> null
             }
+            val titleWarning = if (type == VoiceActionType.CREATE && transcript != null &&
+                !isTitleGroundedInTranscript(title, transcript)
+            ) "This generated title contains meaningful words that were not recognized in your speech. Correct it before confirming." else null
             actions += ProposedVoiceAction(type, title, target, uniqueTarget?.id, whenText, date?.first, date?.second,
-                recurrence, priority, fields["project"], fields["details"], warning)
+                recurrence, priority, fields["project"], fields["details"], warning, titleWarning)
         }
         if (actions.any { it.type == VoiceActionType.NONE } && actions.size > 1) {
             errors += "The none action cannot be mixed with other proposed actions."
@@ -108,6 +117,18 @@ object VoiceActionParser {
     fun resolveTargetId(target: String, tasks: List<TaskEntity>): String? = findTargets(target, tasks).singleOrNull()?.id
     fun resolveWhen(raw: String): Pair<String, String?>? = resolveDate(raw, LocalDate.now())
     fun parsePriorityValue(raw: String): Int? = parsePriority(raw)
+
+    /** Conservatively blocks generated titles that introduce content absent from the spoken transcript. */
+    fun isTitleGroundedInTranscript(title: String, transcript: String): Boolean {
+        val ignored = setOf("a", "an", "the", "to", "for", "of", "and", "please", "me", "my", "i", "we", "need", "want", "would", "could", "should", "remember", "remind", "task", "add", "create", "make", "put", "on", "in", "at", "by", "with")
+        val spokenWords = normalize(transcript).split(' ').filter { it.isNotBlank() }.toSet()
+        val titleWords = normalize(title).split(' ').filter { it.isNotBlank() && it !in ignored }
+        if (titleWords.isEmpty()) return false
+        return titleWords.all { word ->
+            word in spokenWords || word.removeSuffix("s") in spokenWords ||
+                word.removeSuffix("ed") in spokenWords || word.removeSuffix("ing") in spokenWords
+        }
+    }
 
     private fun findTargets(target: String, tasks: List<TaskEntity>): List<TaskEntity> {
         val needle = normalize(target)

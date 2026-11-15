@@ -4,9 +4,11 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.time.LocalDate
 
 @RunWith(AndroidJUnit4::class)
 class TaskSyncModelSafetyTest {
@@ -35,5 +37,17 @@ class TaskSyncModelSafetyTest {
             result.exceptionOrNull()?.message.orEmpty(),
             result.exceptionOrNull()?.message.orEmpty().contains("token limit")
         )
+    }
+
+    @Test
+    fun bundledModelTitleUsingUnspokenWordsCannotBeConfirmedWithoutCorrection() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val transcript = "Remind me to balance my checkbook on the first of each month"
+        val modelInput = "existing: none || said: $transcript"
+        val output = TaskSyncModel.get(context).generate(modelInput).getOrThrow()
+        val parsed = VoiceActionParser.parse(output, emptyList(), LocalDate.of(2026, 11, 15), transcript)
+
+        assertNotNull("Expected the model's unsupported title wording to require review: $output", parsed.actions.single().titleWarning)
+        assertTrue(VoiceActionParser.isTitleGroundedInTranscript("Balance checkbook", transcript))
     }
 }

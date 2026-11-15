@@ -11,18 +11,52 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import java.util.Locale
 
+internal interface SpeechRecognizerHandle {
+    fun setRecognitionListener(listener: RecognitionListener)
+    fun startListening(intent: Intent)
+    fun stopListening()
+    fun cancel()
+    fun destroy()
+}
+
+internal interface SpeechRecognitionProvider {
+    fun isAvailable(context: Context): Boolean
+    fun isOnDeviceAvailable(context: Context): Boolean
+    fun create(context: Context, onDevice: Boolean): SpeechRecognizerHandle
+}
+
+private object AndroidSpeechRecognitionProvider : SpeechRecognitionProvider {
+    override fun isAvailable(context: Context) = SpeechRecognizer.isRecognitionAvailable(context)
+    override fun isOnDeviceAvailable(context: Context) = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+        SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
+
+    override fun create(context: Context, onDevice: Boolean): SpeechRecognizerHandle {
+        val recognizer = if (onDevice) SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+        else SpeechRecognizer.createSpeechRecognizer(context)
+        return object : SpeechRecognizerHandle {
+            override fun setRecognitionListener(listener: RecognitionListener) = recognizer.setRecognitionListener(listener)
+            override fun startListening(intent: Intent) = recognizer.startListening(intent)
+            override fun stopListening() = recognizer.stopListening()
+            override fun cancel() = recognizer.cancel()
+            override fun destroy() = recognizer.destroy()
+        }
+    }
+}
+
 /** Captures speech until the user explicitly taps the microphone to stop. */
-class SpeechCaptureController(
+class SpeechCaptureController internal constructor(
     context: Context,
     private val onStarting: () -> Unit,
     private val onListening: () -> Unit,
     private val onPartialTranscript: (String) -> Unit,
     private val onTranscript: (String) -> Unit,
-    private val onError: (String) -> Unit
+    private val onIncompleteTranscript: (String, String) -> Unit,
+    private val onError: (String) -> Unit,
+    private val speechProvider: SpeechRecognitionProvider = AndroidSpeechRecognitionProvider
 ) {
     private val appContext = context.applicationContext
     private val handler = Handler(Looper.getMainLooper())
-    private var recognizer: SpeechRecognizer? = null
+    private var recognizer: SpeechRecognizerHandle? = null
     private var completedTranscript = ""
     private var currentPartial = ""
     private var isListening = false
@@ -35,7 +69,7 @@ class SpeechCaptureController(
     private var languageTag = ENGLISH_INDIA
 
     fun start() {
-        if (!SpeechRecognizer.isRecognitionAvailable(appContext)) {
+        if (!speechProvider.isAvailable(appContext)) {
             onError("Speech recognition isn't available on this device. Try installing or enabling its speech service.")
             return
         }
@@ -65,12 +99,12 @@ class SpeechCaptureController(
         if (!isListening || stopRequested) return
         stopRequested = true
         if (pendingRestart != null) {
-            finishWithAccumulatedSpeech("I couldn't hear a clear request. Try speaking again.")
+            finishAfterExplicitStop("I couldn't hear a clear request. Try speaking again.")
             return
         }
         cancelPendingRestart()
         runCatching { recognizer?.stopListening() }
-            .onFailure { finishWithAccumulatedSpeech("I couldn't finish voice recognition. Please try again.") }
+            .onFailure { finishIncomplete("I couldn't finish voice recognition. Please check the partial transcript.") }
     }
 
     fun destroy() {
@@ -99,13 +133,8 @@ class SpeechCaptureController(
 
     private fun ensureRecognizer() {
         if (recognizer != null) return
-        recognizer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            SpeechRecognizer.isOnDeviceRecognitionAvailable(appContext)
-        ) {
-            SpeechRecognizer.createOnDeviceSpeechRecognizer(appContext)
-        } else {
-            SpeechRecognizer.createSpeechRecognizer(appContext)
-        }
+        val onDevice = speechProvider.isOnDeviceAvailable(appContext)
+        recognizer = speechProvider.create(appContext, onDevice)
         recognizer?.setRecognitionListener(listener)
     }
 
@@ -120,7 +149,7 @@ class SpeechCaptureController(
             restartFailures++
             lastRestartError = failureMessage
             if (restartFailures > MAX_RESTART_FAILURES) {
-                finishWithAccumulatedSpeech(lastRestartError)
+                finishIncomplete(lastRestartError)
                 return
             }
         }
@@ -148,13 +177,24 @@ class SpeechCaptureController(
         onPartialTranscript(completedTranscript)
     }
 
-    private fun finishWithAccumulatedSpeech(emptyMessage: String) {
+    /** Only the explicit Stop path with a final recognizer result may release text to inference. */
+    private fun finishAfterExplicitStop(emptyMessage: String) {
+        isListening = false
+        stopRequested = false
+        cancelPendingRestart()
+        val transcript = completedTranscript.trim()
+        currentPartial = ""
+        if (transcript.isBlank()) onError(emptyMessage) else onTranscript(transcript)
+    }
+
+    /** Recognition errors keep any text for review but never mark it as a complete transcript. */
+    private fun finishIncomplete(message: String) {
         isListening = false
         stopRequested = false
         cancelPendingRestart()
         val transcript = VoiceTranscriptStitcher.append(completedTranscript, currentPartial)
         currentPartial = ""
-        if (transcript.isBlank()) onError(emptyMessage) else onTranscript(transcript)
+        if (transcript.isBlank()) onError(message) else onIncompleteTranscript(transcript, message)
     }
 
     private fun cancelPendingRestart() {
@@ -186,6 +226,7 @@ class SpeechCaptureController(
         override fun onEvent(eventType: Int, params: Bundle?) = Unit
 
         override fun onPartialResults(partialResults: Bundle?) {
+            if (!isListening) return
             notifyReadyForSpeech()
             val partial = partialResults
                 ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
@@ -197,24 +238,30 @@ class SpeechCaptureController(
         }
 
         override fun onResults(results: Bundle?) {
+            if (!isListening) return
             notifyReadyForSpeech()
             val transcript = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
-            acceptSegment(transcript)
             restartFailures = 0
             if (stopRequested) {
-                finishWithAccumulatedSpeech("I couldn't hear a clear request. Try speaking again.")
+                if (transcript.isNullOrBlank()) {
+                    finishIncomplete("Speech recognition did not return a final transcript. Please check the partial text.")
+                } else {
+                    acceptSegment(transcript)
+                    finishAfterExplicitStop("I couldn't hear a clear request. Try speaking again.")
+                }
             } else {
+                acceptSegment(transcript)
                 scheduleRestart(SEGMENT_RESTART_DELAY_MS)
             }
         }
 
         override fun onError(error: Int) {
             if (!isListening) return
-            acceptSegment(null)
             if (stopRequested) {
-                finishWithAccumulatedSpeech("I couldn't hear a clear request. Try speaking again.")
+                finishIncomplete("Speech recognition ended before it returned a final transcript. Please check the partial text.")
                 return
             }
+            acceptSegment(null)
 
             when (error) {
                 SpeechRecognizer.ERROR_NO_MATCH,
@@ -224,9 +271,9 @@ class SpeechCaptureController(
                     scheduleRestart(SEGMENT_RESTART_DELAY_MS)
                 }
                 SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ->
-                    finishWithAccumulatedSpeech("Microphone permission is needed for voice capture.")
+                    finishIncomplete("Microphone permission is needed for voice capture.")
                 SpeechRecognizer.ERROR_AUDIO ->
-                    finishWithAccumulatedSpeech("Microphone audio failed. Please try again.")
+                    finishIncomplete("Microphone audio failed. Please check the partial transcript or try again.")
                 SpeechRecognizer.ERROR_NETWORK,
                 SpeechRecognizer.ERROR_NETWORK_TIMEOUT,
                 SpeechRecognizer.ERROR_SERVER,
@@ -246,7 +293,7 @@ class SpeechCaptureController(
                         restartFailures = 0
                         scheduleRestart(RETRY_DELAY_MS, recreate = true)
                     } else {
-                        finishWithAccumulatedSpeech("No supported English voice is available in the installed speech service.")
+                        finishIncomplete("No supported English voice is available in the installed speech service.")
                     }
                 }
                 else -> scheduleRestart(RETRY_DELAY_MS, countFailure = true, recreate = true, failureMessage = restartErrorMessage(error))

@@ -85,4 +85,31 @@ class VoiceActionParserTest {
         assertEquals(listOf("Buy milk", "Call the clinic", "Pay rent"), parsed.actions.map { it.title })
         assertTrue(parsed.errors.isEmpty())
     }
+
+    @Test fun flagsGeneratedCreateTitlesThatIntroduceWordsNotInSpeech() {
+        val parsed = VoiceActionParser.parse(
+            "action=create | title=Bake checkbook",
+            existing,
+            LocalDate.of(2026, 11, 15),
+            transcript = "Remind me to balance my checkbook on the first of each month"
+        )
+
+        assertEquals("Bake checkbook", parsed.actions.single().title)
+        assertNotNull(parsed.actions.single().titleWarning)
+        assertTrue(
+            VoiceActionParser.isTitleGroundedInTranscript("Buy milk", "Please remind me to buy milk tomorrow")
+        )
+    }
+
+    @Test fun titleCanBeCorrectedToWordsRecognizedInSpeech() {
+        assertTrue(
+            VoiceActionParser.isTitleGroundedInTranscript(
+                "Balance checkbook",
+                "Remind me to balance my checkbook on the first of each month"
+            )
+        )
+        assertFalse(
+            VoiceActionParser.isTitleGroundedInTranscript("Bake checkbook", "Remind me to balance my checkbook")
+        )
+    }
 }

@@ -20,7 +20,7 @@ object TaskSyncInterpreter {
             val output = withTimeout(INFERENCE_TIMEOUT_MS) {
                 TaskSyncModel.get(context).generate(modelInput).getOrThrow()
             }
-            val parsed = VoiceActionParser.parse(output, tasks, LocalDate.now())
+            val parsed = VoiceActionParser.parse(output, tasks, LocalDate.now(), transcript.trim())
             require(parsed.actions.isNotEmpty() || parsed.errors.isNotEmpty()) { "The model did not propose any actions." }
             VoiceInterpretation(output, parsed)
         }

@@ -63,7 +63,7 @@ import java.time.LocalTime
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
-private enum class VoiceDialogState { Ready, Starting, Listening, Review, Interpreting, Actions, Applying, Done, Error }
+private enum class VoiceDialogState { Ready, Starting, Listening, TranscriptReview, Review, Interpreting, Actions, Applying, Done, Error }
 
 /** Captures one transcript, sends it to the local model on Stop, then asks once before saving. */
 @Composable
@@ -73,7 +73,8 @@ fun VoiceTaskAssistantDialog(onDismiss: () -> Unit, viewModel: TaskListViewModel
     val scope = rememberCoroutineScope()
     var state by remember { mutableStateOf(VoiceDialogState.Ready) }
     var transcript by remember { mutableStateOf("") }
-    var message by remember { mutableStateOf("Tap the microphone to speak, then tap Stop when you are done.") }
+    var transcriptIsPartial by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf("Tap Speak, say your full request, tap Stop, then review the transcript and choose Interpret.") }
     var rawModelOutput by remember { mutableStateOf("") }
     val proposedActions = remember { mutableStateListOf<ProposedVoiceAction>() }
     var parseErrors by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -110,18 +111,28 @@ fun VoiceTaskAssistantDialog(onDismiss: () -> Unit, viewModel: TaskListViewModel
             context = context,
             onStarting = {
                 transcript = ""
+                transcriptIsPartial = false
                 state = VoiceDialogState.Starting
                 message = "Preparing the microphone… Wait for Listening before speaking."
             },
             onListening = {
                 transcript = ""
+                transcriptIsPartial = false
                 state = VoiceDialogState.Listening
-                message = "Listening to your full request. Tap Stop when you are done."
+                message = "Listening to your full request. The model stays idle until you stop."
             },
             onPartialTranscript = { transcript = it },
             onTranscript = { recognized ->
                 transcript = recognized
-                interpretTranscript(recognized)
+                transcriptIsPartial = false
+                state = VoiceDialogState.TranscriptReview
+                message = "Speech is complete. Check the transcript, then tap Interpret. The model has not run yet."
+            },
+            onIncompleteTranscript = { recognized, error ->
+                transcript = recognized
+                transcriptIsPartial = true
+                state = VoiceDialogState.TranscriptReview
+                message = "$error This may be incomplete. Correct it or re-record before interpreting."
             },
             onError = {
                 message = it
@@ -173,10 +184,11 @@ fun VoiceTaskAssistantDialog(onDismiss: () -> Unit, viewModel: TaskListViewModel
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 listOf("Listened", "Transcript", "Parsed", "Review").forEachIndexed { index, label ->
                     val currentStep = when (state) {
+                        VoiceDialogState.Ready, VoiceDialogState.Error -> -1
                         VoiceDialogState.Listening, VoiceDialogState.Starting -> 0
-                        VoiceDialogState.Review -> 1
+                        VoiceDialogState.TranscriptReview, VoiceDialogState.Review -> 1
                         VoiceDialogState.Interpreting -> 2
-                        else -> 3
+                        VoiceDialogState.Actions, VoiceDialogState.Applying, VoiceDialogState.Done -> 3
                     }
                     Text(label, style = MaterialTheme.typography.labelSmall, color = if (index <= currentStep) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -185,14 +197,14 @@ fun VoiceTaskAssistantDialog(onDismiss: () -> Unit, viewModel: TaskListViewModel
             if (state == VoiceDialogState.Ready || state == VoiceDialogState.Error) {
                 DebugTranscriptInput { typed -> transcript = typed; interpretTranscript(typed) }
             }
-            if (state == VoiceDialogState.Listening || state == VoiceDialogState.Review) {
+            if (state == VoiceDialogState.Listening || state == VoiceDialogState.TranscriptReview || state == VoiceDialogState.Review) {
                 OutlinedTextField(
                     value = transcript,
-                    onValueChange = { if (state == VoiceDialogState.Review) transcript = it },
+                    onValueChange = { if (state != VoiceDialogState.Listening) transcript = it },
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text(if (state == VoiceDialogState.Listening) "Live transcript" else "Transcript") },
-                    supportingText = { Text(if (state == VoiceDialogState.Listening) "Speech-to-text only. The model runs after Stop." else "Edit recognition errors, then retry the model.") },
-                    readOnly = state != VoiceDialogState.Review,
+                    supportingText = { Text(if (state == VoiceDialogState.Listening) "Speech-to-text only. Nothing is interpreted until you stop and choose Interpret." else "Check and edit the recognized words before they are sent to the model.") },
+                    readOnly = state == VoiceDialogState.Listening,
                     minLines = 2,
                     maxLines = 5
                 )
@@ -209,6 +221,7 @@ fun VoiceTaskAssistantDialog(onDismiss: () -> Unit, viewModel: TaskListViewModel
                         index = index,
                         action = action,
                         tasks = viewModel.allTasks.value,
+                        transcript = transcript,
                         onChange = { proposedActions[index] = it },
                         onRemove = { proposedActions.removeAt(index) }
                     )
@@ -216,10 +229,14 @@ fun VoiceTaskAssistantDialog(onDismiss: () -> Unit, viewModel: TaskListViewModel
                 if (proposedActions.isEmpty()) Text("The model proposed no tasks. Close to discard.")
             }
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                if (state == VoiceDialogState.Review) OutlinedButton(onClick = ::startCapture) { Text("Re-record") }
+                if (state == VoiceDialogState.Review || state == VoiceDialogState.TranscriptReview) OutlinedButton(onClick = ::startCapture) { Text("Re-record") }
                 when (state) {
                     VoiceDialogState.Starting -> Text("Starting…")
                     VoiceDialogState.Listening -> Button(onClick = controller::stop) { Text("Stop") }
+                    VoiceDialogState.TranscriptReview -> Button(
+                        onClick = { interpretTranscript(transcript); transcriptIsPartial = false },
+                        enabled = transcript.isNotBlank()
+                    ) { Text(if (transcriptIsPartial) "Interpret edited transcript" else "Interpret") }
                     VoiceDialogState.Review -> Button(onClick = { interpretTranscript(transcript) }, enabled = transcript.isNotBlank()) { Text("Retry") }
                     VoiceDialogState.Actions -> {
                         val noOp = proposedActions.singleOrNull()?.type == VoiceActionType.NONE
@@ -228,7 +245,7 @@ fun VoiceTaskAssistantDialog(onDismiss: () -> Unit, viewModel: TaskListViewModel
                         val proposedDuplicate = createTitles.size != createTitles.distinct().size
                         val existingDuplicate = proposedActions.any { action -> action.type == VoiceActionType.CREATE && tasks.any { task -> task.status != "completed" && task.title.equals(action.title.trim(), ignoreCase = true) } }
                         val canApply = !noOp && !proposedDuplicate && !existingDuplicate && parseErrors.isEmpty() && proposedActions.isNotEmpty() && proposedActions.all { action ->
-                            when (action.type) {
+                            action.titleWarning == null && when (action.type) {
                                 VoiceActionType.NONE -> false
                                 VoiceActionType.CREATE -> action.title.isNotBlank()
                                 VoiceActionType.UPDATE, VoiceActionType.COMPLETE, VoiceActionType.DELETE -> action.target?.let { VoiceActionParser.resolveTargetId(it, tasks) } != null
@@ -269,6 +286,7 @@ private fun VoiceProposedActionCard(
     index: Int,
     action: ProposedVoiceAction,
     tasks: List<TaskEntity>,
+    transcript: String,
     onChange: (ProposedVoiceAction) -> Unit,
     onRemove: () -> Unit
 ) {
@@ -288,7 +306,13 @@ private fun VoiceProposedActionCard(
         if (editable) {
             OutlinedTextField(
                 value = action.title,
-                onValueChange = { onChange(action.copy(title = it)) },
+                onValueChange = { title ->
+                    val grounded = VoiceActionParser.isTitleGroundedInTranscript(title, transcript)
+                    onChange(action.copy(
+                        title = title,
+                        titleWarning = if (grounded) null else "This title includes meaningful words not found in the transcript. Edit it before confirming."
+                    ))
+                },
                 label = { Text("Task title") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
@@ -323,6 +347,7 @@ private fun VoiceProposedActionCard(
             }
         }
         action.warning?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+        action.titleWarning?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
         TextButton(onClick = onRemove) { Text("Remove") }
     }
 
