@@ -2,6 +2,7 @@ package com.example.tasksync.data.repository
 
 import com.example.tasksync.data.local.dao.TaskDao
 import com.example.tasksync.data.local.entity.TaskEntity
+import com.example.tasksync.data.local.entity.SubtaskEntity
 import kotlinx.coroutines.flow.Flow
 import com.example.tasksync.data.reminder.TaskReminderScheduler
 import android.content.Context
@@ -60,8 +61,9 @@ class TaskRepository(
         scheduleReminder(updatedTask)
     }
 
-    suspend fun restoreTask(task: TaskEntity) {
+    suspend fun restoreTask(task: TaskEntity, subtasks: List<SubtaskEntity> = emptyList()) {
         taskDao.insertTask(task)
+        for (subtask in subtasks) taskDao.insertSubtask(subtask)
         scheduleReminder(task)
     }
 
@@ -87,16 +89,22 @@ class TaskRepository(
         }
     }
 
-    suspend fun deleteTask(task: TaskEntity) {
-        taskDao.deleteTask(task)
+    suspend fun deleteTask(task: TaskEntity): List<SubtaskEntity> {
+        val subtasks = taskDao.deleteTaskAndSubtasks(task)
         TaskReminderScheduler.cancel(appContext, task.id)
+        return subtasks
+    }
+
+    fun synchronizeReminder(taskId: String, taskAfterTransaction: TaskEntity?) {
+        if (taskAfterTransaction == null) TaskReminderScheduler.cancel(appContext, taskId)
+        else scheduleReminder(taskAfterTransaction)
     }
 
     private fun scheduleReminder(task: TaskEntity) {
         TaskReminderScheduler.schedule(appContext, task.id, task.title, task.description, task.dueDate, task.dueTime, task.reminderEnabled && task.status != "completed")
     }
 
-    private suspend fun createNextOccurrence(task: TaskEntity): TaskEntity? {
+    fun buildNextOccurrence(task: TaskEntity): TaskEntity? {
         val intervalDays = when (task.recurrenceRule) {
             "daily" -> 1L
             "weekly" -> 7L
@@ -119,8 +127,12 @@ class TaskRepository(
             createdAt = System.currentTimeMillis(),
             updatedAt = System.currentTimeMillis()
         )
-        taskDao.insertTask(next)
-        scheduleReminder(next)
         return next
     }
+
+    private suspend fun createNextOccurrence(task: TaskEntity): TaskEntity? =
+        buildNextOccurrence(task)?.also {
+            taskDao.insertTask(it)
+            scheduleReminder(it)
+        }
 }

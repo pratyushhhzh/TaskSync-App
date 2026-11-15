@@ -96,16 +96,13 @@ private fun BoardLaneColumn(
         else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.56f)
     }
     Column(
-        modifier = Modifier.width(304.dp).fillMaxHeight()
+        modifier = Modifier.width(250.dp).fillMaxHeight()
             .background(laneBackground, RoundedCornerShape(22.dp))
             .padding(12.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Box(Modifier.size(9.dp).background(lane.accent, CircleShape))
-            Text(lane.title, modifier = Modifier.weight(1f).padding(start = 9.dp), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)) {
-                Text(tasks.size.toString(), modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp), style = MaterialTheme.typography.labelMedium)
-            }
+            Text("${lane.title} · ${tasks.size}", modifier = Modifier.weight(1f).padding(start = 9.dp), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             if (lane.status == "inbox") {
                 IconButton(onClick = onAddTask, modifier = Modifier.size(36.dp)) {
                     Icon(Icons.Default.Add, contentDescription = "Add project task")

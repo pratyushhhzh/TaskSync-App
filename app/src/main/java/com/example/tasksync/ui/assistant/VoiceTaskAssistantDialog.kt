@@ -4,29 +4,43 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccessTime
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.TimePicker
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.rememberDatePickerState
+import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -40,45 +54,74 @@ import com.example.tasksync.ai.ProposedVoiceAction
 import com.example.tasksync.ai.TaskSyncInterpreter
 import com.example.tasksync.ai.VoiceActionParser
 import com.example.tasksync.ai.VoiceActionType
+import com.example.tasksync.data.local.entity.TaskEntity
 import com.example.tasksync.ui.tasks.TaskListViewModel
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.LocalDate
+import java.time.LocalTime
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 
 private enum class VoiceDialogState { Ready, Starting, Listening, Review, Interpreting, Actions, Applying, Done, Error }
 
-/** Speech-to-text only. Interpretation and task actions belong to a later stage. */
+/** Captures one transcript, sends it to the local model on Stop, then asks once before saving. */
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 fun VoiceTaskAssistantDialog(onDismiss: () -> Unit, viewModel: TaskListViewModel = viewModel()) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var state by remember { mutableStateOf(VoiceDialogState.Ready) }
     var transcript by remember { mutableStateOf("") }
-    var alternatives by remember { mutableStateOf<List<String>>(emptyList()) }
-    var message by remember { mutableStateOf("Tap the microphone to speak, then tap it again to stop.") }
+    var message by remember { mutableStateOf("Tap the microphone to speak, then tap Stop when you are done.") }
     var rawModelOutput by remember { mutableStateOf("") }
     val proposedActions = remember { mutableStateListOf<ProposedVoiceAction>() }
     var parseErrors by remember { mutableStateOf<List<String>>(emptyList()) }
+
+    fun interpretTranscript(text: String) {
+        if (text.isBlank()) {
+            state = VoiceDialogState.Error
+            message = "No speech was captured. Tap Speak and try again."
+            return
+        }
+        state = VoiceDialogState.Interpreting
+        message = "The local model is extracting task titles, dates, times, and repeats…"
+        scope.launch {
+            TaskSyncInterpreter.interpret(context, text, viewModel.allTasks.value)
+                .onSuccess { result ->
+                    rawModelOutput = result.rawModelOutput
+                    proposedActions.clear()
+                    proposedActions.addAll(result.parsed.actions)
+                    parseErrors = result.parsed.errors
+                    state = VoiceDialogState.Actions
+                    message = if (result.parsed.errors.isEmpty()) {
+                        "Review all ${result.parsed.actions.count { it.type == VoiceActionType.CREATE || it.type == VoiceActionType.UPDATE }} proposed tasks, then confirm once."
+                    } else "The model response needs review. No changes have been saved."
+                }
+                .onFailure { error ->
+                    message = "Could not interpret the transcript: ${error.message ?: "model error"}. Your transcript is kept so you can retry."
+                    state = VoiceDialogState.Review
+                }
+        }
+    }
 
     val controller = remember(context) {
         SpeechCaptureController(
             context = context,
             onStarting = {
                 transcript = ""
-                alternatives = emptyList()
                 state = VoiceDialogState.Starting
-                message = "Preparing the microphone… Wait for the Listening indicator before speaking."
+                message = "Preparing the microphone… Wait for Listening before speaking."
             },
             onListening = {
                 transcript = ""
-                alternatives = emptyList()
                 state = VoiceDialogState.Listening
-                message = "Listening… Tap the microphone again when you're done."
+                message = "Listening to your full request. Tap Stop when you are done."
             },
             onPartialTranscript = { transcript = it },
-            onTranscript = { recognized, otherCandidates ->
+            onTranscript = { recognized ->
                 transcript = recognized
-                alternatives = otherCandidates
-                state = VoiceDialogState.Review
-                message = "Review the transcript, then ask the local model to prepare task actions. Nothing is saved yet."
+                interpretTranscript(recognized)
             },
             onError = {
                 message = it
@@ -90,7 +133,7 @@ fun VoiceTaskAssistantDialog(onDismiss: () -> Unit, viewModel: TaskListViewModel
 
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) controller.start() else {
-            message = "Microphone permission is needed to use voice capture."
+            message = "Microphone permission is needed for voice capture."
             state = VoiceDialogState.Error
         }
     }
@@ -98,176 +141,217 @@ fun VoiceTaskAssistantDialog(onDismiss: () -> Unit, viewModel: TaskListViewModel
     fun startCapture() {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             controller.start()
-        } else {
-            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-        }
+        } else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
 
-    AlertDialog(
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
         onDismissRequest = onDismiss,
-        icon = {
-            androidx.compose.material3.Icon(
-                Icons.Default.Mic,
-                contentDescription = null,
-                tint = if (state == VoiceDialogState.Listening) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+        sheetState = sheetState,
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+        dragHandle = {
+            androidx.compose.material3.BottomSheetDefaults.DragHandle(
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
             )
-        },
-        title = { Text("TaskSync voice capture") },
-        text = {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
-            ) {
-                Text(message, style = MaterialTheme.typography.bodyMedium)
-                if (state == VoiceDialogState.Starting) {
-                    androidx.compose.material3.CircularProgressIndicator()
-                }
-                if (state == VoiceDialogState.Listening || state == VoiceDialogState.Review || state == VoiceDialogState.Interpreting || state == VoiceDialogState.Actions || state == VoiceDialogState.Applying || state == VoiceDialogState.Done) {
-                    OutlinedTextField(
-                        value = transcript,
-                            onValueChange = { if (state == VoiceDialogState.Review) transcript = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text(if (state == VoiceDialogState.Listening) "Live transcript" else "Transcript") },
-                        supportingText = {
-                            Text(
-                                when (state) {
-                                    VoiceDialogState.Listening -> "Speech-to-text only. No task processing runs while you speak."
-                                    VoiceDialogState.Interpreting -> "The local model is preparing proposed actions."
-                                    VoiceDialogState.Actions -> "Review every proposed change. Nothing is saved until Apply."
-                                    VoiceDialogState.Applying -> "Applying the changes you confirmed."
-                                    VoiceDialogState.Done -> "Confirmed actions were sent to the existing task repository."
-                                    else -> "Edit recognition errors before confirming the transcript."
-                                }
-                            )
-                        },
-                        readOnly = state != VoiceDialogState.Review,
-                        minLines = 3,
-                        maxLines = 8
-                    )
-                }
-                if (state == VoiceDialogState.Review && alternatives.isNotEmpty()) {
-                    Text("Other speech recognition results", style = MaterialTheme.typography.labelMedium)
-                    alternatives.forEachIndexed { index, candidate ->
-                        TextButton(onClick = { transcript = candidate }) {
-                            Text("Use alternative ${index + 1}: $candidate")
-                        }
+        }
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().navigationBarsPadding()
+                .padding(horizontal = 20.dp).padding(bottom = 16.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                androidx.compose.material3.Icon(
+                    Icons.Default.Mic,
+                    contentDescription = null,
+                    tint = if (state == VoiceDialogState.Listening) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                )
+                Text("Voice tasks", style = MaterialTheme.typography.headlineSmall)
+            }
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                listOf("Listened", "Transcript", "Parsed", "Review").forEachIndexed { index, label ->
+                    val currentStep = when (state) {
+                        VoiceDialogState.Listening, VoiceDialogState.Starting -> 0
+                        VoiceDialogState.Review -> 1
+                        VoiceDialogState.Interpreting -> 2
+                        else -> 3
                     }
-                }
-                if (state == VoiceDialogState.Interpreting || state == VoiceDialogState.Applying) {
-                    CircularProgressIndicator()
-                }
-                if (state == VoiceDialogState.Actions) {
-                    parseErrors.forEach { Text(it, color = MaterialTheme.colorScheme.error) }
-                    if (parseErrors.isNotEmpty()) Text("Unapplied model response: $rawModelOutput", style = MaterialTheme.typography.bodySmall)
-                    proposedActions.forEachIndexed { index, action ->
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                            Text("${index + 1}. ${action.type.name.lowercase().replaceFirstChar(Char::uppercase)}", style = MaterialTheme.typography.titleSmall)
-                            if (action.type == VoiceActionType.CREATE || action.type == VoiceActionType.UPDATE) {
-                                OutlinedTextField(
-                                    value = action.title,
-                                    onValueChange = { proposedActions[index] = action.copy(title = it) },
-                                    label = { Text("Task title") }, modifier = Modifier.fillMaxWidth()
-                                )
-                            }
-                            if (action.target != null) {
-                                OutlinedTextField(
-                                    value = action.target,
-                                    onValueChange = { proposedActions[index] = action.copy(target = it, targetTaskId = VoiceActionParser.resolveTargetId(it, viewModel.allTasks.value)) },
-                                    label = { Text("Existing task to change") }, modifier = Modifier.fillMaxWidth()
-                                )
-                            }
-                            if (action.type == VoiceActionType.CREATE || action.type == VoiceActionType.UPDATE) {
-                                OutlinedTextField(value = action.whenText.orEmpty(), onValueChange = { raw ->
-                                    val parsed = VoiceActionParser.resolveWhen(raw)
-                                    proposedActions[index] = action.copy(whenText = raw, dueDate = parsed?.first, dueTime = parsed?.second,
-                                        warning = if (parsed == null) "Date/time ‘$raw’ could not be resolved; it will be retained as text." else null)
-                                }, label = { Text("Date and time (original phrase shown)") }, modifier = Modifier.fillMaxWidth())
-                                Text("Resolved: ${action.dueDate ?: "not resolved"}${action.dueTime?.let { " at $it" }.orEmpty()}")
-                            }
-                            if (action.type == VoiceActionType.CREATE || action.type == VoiceActionType.UPDATE) {
-                                OutlinedTextField(value = listOf("", "High", "Medium", "Low", "None")[action.priority ?: 4], onValueChange = { raw ->
-                                    VoiceActionParser.parsePriorityValue(raw)?.let { proposedActions[index] = action.copy(priority = it) }
-                                }, label = { Text("Priority (high/1, medium/2, low/3, none/4)") }, modifier = Modifier.fillMaxWidth())
-                            }
-                            if (action.type == VoiceActionType.CREATE || action.type == VoiceActionType.UPDATE) {
-                                OutlinedTextField(value = action.project.orEmpty(), onValueChange = { proposedActions[index] = action.copy(project = it.ifBlank { null }) }, label = { Text("Project") }, modifier = Modifier.fillMaxWidth())
-                            }
-                            if (action.type == VoiceActionType.CREATE || action.type == VoiceActionType.UPDATE) {
-                                OutlinedTextField(value = action.details.orEmpty(), onValueChange = { proposedActions[index] = action.copy(details = it.ifBlank { null }) }, label = { Text("Details") }, modifier = Modifier.fillMaxWidth())
-                            }
-                            action.warning?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-                            if (action.type == VoiceActionType.DELETE) Text("This task will be permanently deleted after you apply.", color = MaterialTheme.colorScheme.error)
-                            if (action.type == VoiceActionType.CREATE && viewModel.allTasks.value.any { it.status != "completed" && it.title.equals(action.title.trim(), true) }) {
-                                Text("A task with this title already exists. Check for a duplicate.", color = MaterialTheme.colorScheme.error)
-                            }
-                            TextButton(onClick = { proposedActions.removeAt(index) }) { Text("Remove this action") }
-                        }
-                    }
-                    if (proposedActions.isEmpty()) Text("No task actions remain. Close to discard.")
-                    if (parseErrors.isNotEmpty()) TextButton(onClick = { state = VoiceDialogState.Review }) { Text("Edit transcript and retry") }
+                    Text(label, style = MaterialTheme.typography.labelSmall, color = if (index <= currentStep) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-        },
-        confirmButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (state == VoiceDialogState.Ready || state == VoiceDialogState.Error) {
+                DebugTranscriptInput { typed -> transcript = typed; interpretTranscript(typed) }
+            }
+            if (state == VoiceDialogState.Listening || state == VoiceDialogState.Review) {
+                OutlinedTextField(
+                    value = transcript,
+                    onValueChange = { if (state == VoiceDialogState.Review) transcript = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(if (state == VoiceDialogState.Listening) "Live transcript" else "Transcript") },
+                    supportingText = { Text(if (state == VoiceDialogState.Listening) "Speech-to-text only. The model runs after Stop." else "Edit recognition errors, then retry the model.") },
+                    readOnly = state != VoiceDialogState.Review,
+                    minLines = 2,
+                    maxLines = 5
+                )
+            }
+            if (state == VoiceDialogState.Starting || state == VoiceDialogState.Interpreting || state == VoiceDialogState.Applying) {
+                CircularProgressIndicator()
+            }
+            if (state == VoiceDialogState.Actions) {
+                parseErrors.forEach { Text(it, color = MaterialTheme.colorScheme.error) }
+                if (parseErrors.isNotEmpty()) Text("Unapplied model response: $rawModelOutput", style = MaterialTheme.typography.bodySmall)
+                if (proposedActions.singleOrNull()?.type == VoiceActionType.NONE) Text("The model found no task changes. Nothing has been saved.")
+                else proposedActions.forEachIndexed { index, action ->
+                    VoiceProposedActionCard(
+                        index = index,
+                        action = action,
+                        tasks = viewModel.allTasks.value,
+                        onChange = { proposedActions[index] = it },
+                        onRemove = { proposedActions.removeAt(index) }
+                    )
+                }
+                if (proposedActions.isEmpty()) Text("The model proposed no tasks. Close to discard.")
+            }
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                if (state == VoiceDialogState.Review) OutlinedButton(onClick = ::startCapture) { Text("Re-record") }
                 when (state) {
-                    VoiceDialogState.Starting -> Text("Starting microphone…")
-                    VoiceDialogState.Listening -> Button(onClick = controller::stop) {
-                        androidx.compose.material3.Icon(Icons.Default.MicOff, contentDescription = null)
-                        Text("  Stop")
-                    }
-                    VoiceDialogState.Review -> Button(onClick = {
-                        state = VoiceDialogState.Interpreting
-                        message = "Running the on-device model…"
-                        scope.launch {
-                            TaskSyncInterpreter.interpret(context, transcript, viewModel.allTasks.value)
-                                .onSuccess { result ->
-                                    rawModelOutput = result.rawModelOutput
-                                    proposedActions.clear()
-                                    proposedActions.addAll(result.parsed.actions)
-                                    parseErrors = result.parsed.errors
-                                    state = VoiceDialogState.Actions
-                                    message = if (result.parsed.errors.isEmpty()) "Review the proposed changes. Apply saves them; Close discards them." else "The model output needs attention. Invalid actions are blocked."
-                                }
-                                .onFailure { error ->
-                                    message = "Could not interpret this transcript: ${error.message ?: "model error"}. Your transcript is still here; edit it or retry."
-                                    state = VoiceDialogState.Review
-                                }
-                        }
-                    }, enabled = transcript.isNotBlank()) { Text("Prepare task changes") }
+                    VoiceDialogState.Starting -> Text("Starting…")
+                    VoiceDialogState.Listening -> Button(onClick = controller::stop) { Text("Stop") }
+                    VoiceDialogState.Review -> Button(onClick = { interpretTranscript(transcript) }, enabled = transcript.isNotBlank()) { Text("Retry") }
                     VoiceDialogState.Actions -> {
+                        val noOp = proposedActions.singleOrNull()?.type == VoiceActionType.NONE
                         val tasks = viewModel.allTasks.value
-                        val projects = viewModel.projects.value
-                        val canApply = parseErrors.isEmpty() && proposedActions.isNotEmpty() && proposedActions.all { action ->
+                        val createTitles = proposedActions.filter { it.type == VoiceActionType.CREATE }.map { it.title.trim().lowercase() }
+                        val proposedDuplicate = createTitles.size != createTitles.distinct().size
+                        val existingDuplicate = proposedActions.any { action -> action.type == VoiceActionType.CREATE && tasks.any { task -> task.status != "completed" && task.title.equals(action.title.trim(), ignoreCase = true) } }
+                        val canApply = !noOp && !proposedDuplicate && !existingDuplicate && parseErrors.isEmpty() && proposedActions.isNotEmpty() && proposedActions.all { action ->
                             when (action.type) {
-                                VoiceActionType.NONE -> true
-                                VoiceActionType.CREATE -> action.title.isNotBlank() && (action.project == null || projects.any { it.name.equals(action.project, true) })
-                                else -> action.target?.let { VoiceActionParser.resolveTargetId(it, tasks) } != null && (action.project == null || projects.any { it.name.equals(action.project, true) })
+                                VoiceActionType.NONE -> false
+                                VoiceActionType.CREATE -> action.title.isNotBlank()
+                                VoiceActionType.UPDATE, VoiceActionType.COMPLETE, VoiceActionType.DELETE -> action.target?.let { VoiceActionParser.resolveTargetId(it, tasks) } != null
                             }
                         }
-                        Button(onClick = {
+                        val count = proposedActions.count { it.type == VoiceActionType.CREATE || it.type == VoiceActionType.UPDATE }
+                        if (noOp) TextButton(onClick = onDismiss) { Text("Done") }
+                        else Button(onClick = {
                             state = VoiceDialogState.Applying
                             scope.launch {
                                 runCatching { viewModel.applyConfirmedVoiceActions(proposedActions.toList()) }
-                                    .onSuccess { state = VoiceDialogState.Done; message = "Changes applied to your local task list." }
-                                    .onFailure { state = VoiceDialogState.Actions; message = "Could not apply all changes: ${it.message ?: "storage error"}. Review before retrying." }
+                                    .onSuccess { warnings ->
+                                        state = VoiceDialogState.Done
+                                        message = if (warnings.isEmpty()) "Your confirmed tasks were saved." else "Tasks were saved, but ${warnings.size} reminder(s) could not be scheduled."
+                                    }
+                                    .onFailure { state = VoiceDialogState.Actions; message = "Could not save the changes: ${it.message ?: "storage error"}. No partial changes were kept; review and retry." }
                             }
-                        }, enabled = canApply) { Text("Apply confirmed actions") }
+                        }, enabled = canApply) { Text("Confirm $count ${if (count == 1) "task" else "tasks"}") }
                     }
-                    VoiceDialogState.Ready, VoiceDialogState.Error -> Button(onClick = ::startCapture) {
-                        androidx.compose.material3.Icon(Icons.Default.Mic, contentDescription = null)
-                        Text("  Speak")
-                    }
+                    VoiceDialogState.Ready, VoiceDialogState.Error -> Button(onClick = ::startCapture) { Text("Speak") }
                     VoiceDialogState.Done -> TextButton(onClick = onDismiss) { Text("Done") }
                     VoiceDialogState.Interpreting -> Text("Preparing…")
                     VoiceDialogState.Applying -> Text("Saving…")
                 }
-                if (state == VoiceDialogState.Review) {
-                    OutlinedButton(onClick = ::startCapture) { Text("Re-record") }
+                if (state != VoiceDialogState.Actions && state != VoiceDialogState.Done) {
+                    TextButton(onClick = onDismiss, enabled = state != VoiceDialogState.Applying) { Text("Close") }
+                } else if (state == VoiceDialogState.Actions) {
+                    TextButton(onClick = onDismiss) { Text("Cancel all") }
                 }
             }
-        },
-        dismissButton = { TextButton(onClick = onDismiss, enabled = state != VoiceDialogState.Applying) { Text(if (state == VoiceDialogState.Actions) "Cancel all" else "Close") } }
-    )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun VoiceProposedActionCard(
+    index: Int,
+    action: ProposedVoiceAction,
+    tasks: List<TaskEntity>,
+    onChange: (ProposedVoiceAction) -> Unit,
+    onRemove: () -> Unit
+) {
+    var showDatePicker by remember(action.dueDate) { mutableStateOf(false) }
+    var showTimePicker by remember(action.dueTime) { mutableStateOf(false) }
+    val selectedDate = action.dueDate?.let { runCatching { LocalDate.parse(it) }.getOrNull() } ?: LocalDate.now()
+    val dateState = rememberDatePickerState(selectedDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli())
+    val parsedTime = action.dueTime?.let { runCatching { LocalTime.parse(it) }.getOrNull() }
+    val timeState = rememberTimePickerState(parsedTime?.hour ?: 9, parsedTime?.minute ?: 0, is24Hour = false)
+    val editable = action.type == VoiceActionType.CREATE || action.type == VoiceActionType.UPDATE
+
+    Column(
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)
+    ) {
+        Text("${index + 1}. ${action.type.name.lowercase().replaceFirstChar(Char::uppercase)}", style = MaterialTheme.typography.titleSmall)
+        if (editable) {
+            OutlinedTextField(
+                value = action.title,
+                onValueChange = { onChange(action.copy(title = it)) },
+                label = { Text("Task title") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+        }
+        if (action.target != null) Text("Task: ${action.target}", style = MaterialTheme.typography.bodyMedium)
+        if (editable) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(onClick = { showDatePicker = true }) {
+                    androidx.compose.material3.Icon(Icons.Default.CalendarMonth, contentDescription = "Choose date")
+                    Text(" ${action.dueDate ?: "Choose date"}")
+                }
+                OutlinedButton(onClick = { showTimePicker = true }) {
+                    androidx.compose.material3.Icon(Icons.Default.AccessTime, contentDescription = "Choose time")
+                    action.dueTime?.let { Text(" ${runCatching { LocalTime.parse(it).format(DateTimeFormatter.ofPattern("h:mm a")) }.getOrDefault(it)}") }
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                listOf(null to "No repeat", "daily" to "Daily", "weekdays" to "Weekdays", "weekly" to "Weekly", "monthly" to "Monthly").forEach { (rule, label) ->
+                    FilterChip(
+                        selected = action.recurrenceRule == rule,
+                        onClick = { onChange(action.copy(recurrenceRule = rule)) },
+                        label = { Text(label) }
+                    )
+                }
+            }
+            if (tasks.any { it.status != "completed" && it.title.equals(action.title.trim(), ignoreCase = true) }) {
+                Text("A task with this title already exists.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        action.warning?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+        TextButton(onClick = onRemove) { Text("Remove") }
+    }
+
+    if (showDatePicker) {
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    dateState.selectedDateMillis?.let {
+                        onChange(action.copy(dueDate = Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate().toString(), warning = null))
+                    }
+                    showDatePicker = false
+                }) { Text("Set date") }
+            },
+            dismissButton = { TextButton(onClick = { showDatePicker = false }) { Text("Cancel") } }
+        ) { DatePicker(state = dateState) }
+    }
+    if (showTimePicker) {
+        AlertDialog(
+            onDismissRequest = { showTimePicker = false },
+            title = { Text("Choose time") },
+            text = { TimePicker(state = timeState) },
+            confirmButton = {
+                TextButton(onClick = {
+                    onChange(action.copy(dueTime = LocalTime.of(timeState.hour, timeState.minute).format(DateTimeFormatter.ofPattern("HH:mm:ss")), warning = null))
+                    showTimePicker = false
+                }) { Text("Set time") }
+            },
+            dismissButton = { TextButton(onClick = { showTimePicker = false }) { Text("Cancel") } }
+        )
+    }
 }

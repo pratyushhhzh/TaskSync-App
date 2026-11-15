@@ -52,4 +52,37 @@ class VoiceActionParserTest {
         assertEquals(listOf(VoiceActionType.NONE), parsed.actions.map { it.type })
         assertTrue(parsed.errors.isEmpty())
     }
+
+    @Test fun createWithoutDateDefaultsToTodayAndAccepts24HourTime() {
+        val parsed = VoiceActionParser.parse(
+            "action=create | title=Call the clinic | when=at 14:30",
+            existing,
+            LocalDate.of(2026, 11, 15)
+        )
+        assertEquals("2026-11-15", parsed.actions.single().dueDate)
+        assertEquals("14:30:00", parsed.actions.single().dueTime)
+        assertTrue(parsed.errors.isEmpty())
+    }
+
+    @Test fun recurrenceIsExtractedAndDefaultsOccurrenceDateToToday() {
+        val parsed = VoiceActionParser.parse(
+            "action=create | title=Take vitamins | when=every day at 8 am",
+            existing,
+            LocalDate.of(2026, 11, 15)
+        )
+        assertEquals("2026-11-15", parsed.actions.single().dueDate)
+        assertEquals("08:00:00", parsed.actions.single().dueTime)
+        assertEquals("daily", parsed.actions.single().recurrenceRule)
+    }
+
+    @Test fun keepsAllThreeProposedCreateActions() {
+        val parsed = VoiceActionParser.parse(
+            "action=create | title=Buy milk ;; action=create | title=Call the clinic ;; action=create | title=Pay rent | when=tomorrow",
+            existing,
+            LocalDate.of(2026, 11, 15)
+        )
+        assertEquals(3, parsed.actions.size)
+        assertEquals(listOf("Buy milk", "Call the clinic", "Pay rent"), parsed.actions.map { it.title })
+        assertTrue(parsed.errors.isEmpty())
+    }
 }

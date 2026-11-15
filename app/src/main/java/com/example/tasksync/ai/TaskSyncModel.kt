@@ -17,11 +17,19 @@ class TaskSyncModel private constructor(
 ) : Closeable {
     private val environment = OrtEnvironment.getEnvironment()
 
-    suspend fun generate(input: String, maxOutputTokens: Int = MAX_OUTPUT_TOKENS): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun generate(
+        input: String,
+        maxOutputTokens: Int = MAX_OUTPUT_TOKENS,
+        requireEos: Boolean = true
+    ): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             require(input.isNotBlank()) { "The transcript is empty." }
             require(maxOutputTokens in 1..MAX_OUTPUT_TOKENS) { "Output limit must be between 1 and $MAX_OUTPUT_TOKENS." }
-            val ids = tokenizer.encode(input).map(Int::toLong).toLongArray()
+            val encoded = tokenizer.encodeWithStatus(input)
+            check(!encoded.wasTruncated) {
+                "This request is longer than the model's ${TaskSyncTokenizer.MAX_INPUT_TOKENS}-token input limit. Shorten the transcript and try again."
+            }
+            val ids = encoded.tokenIds.map(Int::toLong).toLongArray()
             val mask = LongArray(ids.size) { 1L }
             val encIds = OnnxTensor.createTensor(environment, LongBuffer.wrap(ids), longArrayOf(1, ids.size.toLong()))
             val encMask = OnnxTensor.createTensor(environment, LongBuffer.wrap(mask), longArrayOf(1, mask.size.toLong()))
@@ -37,7 +45,8 @@ class TaskSyncModel private constructor(
             val encoderMask = OnnxTensor.createTensor(environment, LongBuffer.wrap(mask), longArrayOf(1, mask.size.toLong()))
             try {
                 val generated = mutableListOf(DECODER_START_ID)
-                repeat(maxOutputTokens) {
+                var reachedEos = false
+                for (step in 0 until maxOutputTokens) {
                     val decoderIds = OnnxTensor.createTensor(
                         environment,
                         LongBuffer.wrap(generated.map(Int::toLong).toLongArray()),
@@ -58,8 +67,14 @@ class TaskSyncModel private constructor(
                     } finally {
                         decoderIds.close()
                     }
-                    if (token == TaskSyncTokenizer.EOS_ID) return@runCatching tokenizer.decode(generated.drop(1))
+                    if (token == TaskSyncTokenizer.EOS_ID) {
+                        reachedEos = true
+                        break
+                    }
                     generated += token
+                }
+                check(reachedEos || !requireEos) {
+                    "The model response reached its ${maxOutputTokens}-token limit before completion. Shorten the request and try again."
                 }
                 tokenizer.decode(generated.drop(1))
             } finally {

@@ -10,7 +10,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
@@ -23,7 +26,9 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberDatePickerState
+import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -40,6 +45,8 @@ import com.example.tasksync.data.local.entity.TaskEntity
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -67,10 +74,16 @@ fun TaskDetailBottomSheet(
     var priority by remember(task) { mutableIntStateOf(task?.priority ?: 4) }
     var projectId by remember(task, initialProjectId) { mutableStateOf(task?.projectId ?: initialProjectId) }
     var showDatePicker by remember { mutableStateOf(false) }
+    var showTimePicker by remember { mutableStateOf(false) }
     var newSubtaskTitle by remember { mutableStateOf("") }
     var validationMessage by remember { mutableStateOf<String?>(null) }
 
     val pickerState = rememberDatePickerState(initialSelectedDateMillis = dueDate.toEpochMillisOrNull())
+    val selectedTime = runCatching { LocalTime.parse(dueTime) }.getOrNull()
+    val timePickerState = rememberTimePickerState(
+        initialHour = selectedTime?.hour ?: 9,
+        initialMinute = selectedTime?.minute ?: 0
+    )
 
     ModalBottomSheet(onDismissRequest = onDismissRequest) {
         Column(
@@ -111,15 +124,14 @@ fun TaskDetailBottomSheet(
                     TextButton(onClick = { dueDate = ""; dueTime = "" }) { Text("Clear") }
                 }
             }
-            OutlinedTextField(
-                value = dueTime,
-                onValueChange = { dueTime = it.take(5); validationMessage = null },
-                label = { Text("Time (optional, HH:mm)") },
-                placeholder = { Text("17:30") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
+            OutlinedButton(onClick = { showTimePicker = true }) {
+                androidx.compose.material3.Icon(Icons.Default.AccessTime, contentDescription = "Choose time")
+                Text(
+                    dueTime.takeIf(String::isNotBlank)?.let {
+                        runCatching { LocalTime.parse(it).format(DateTimeFormatter.ofPattern("h:mm a")) }.getOrDefault(it)
+                    } ?: "Set time"
+                )
+            }
 
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
@@ -234,8 +246,8 @@ fun TaskDetailBottomSheet(
                             title.isBlank() -> validationMessage = "Enter a task title."
                             reminderEnabled && (dueDate.isBlank() || dueTime.isBlank()) -> validationMessage = "Choose a deadline date and time to set a reminder."
                             recurrenceRule != "none" && dueDate.isBlank() -> validationMessage = "Choose a deadline date for a repeating task."
-                            dueTime.isNotBlank() && !dueTime.matches(Regex("([01]\\d|2[0-3]):[0-5]\\d")) ->
-                                validationMessage = "Enter time as HH:mm, for example 17:30."
+                            dueTime.isNotBlank() && runCatching { LocalTime.parse(dueTime) }.isFailure ->
+                                validationMessage = "Choose a valid time."
                             else -> {
                                 onSaveTask(
                                     title.trim(), description.ifBlank { null }, dueDate.ifBlank { null },
@@ -267,6 +279,23 @@ fun TaskDetailBottomSheet(
         ) {
             DatePicker(state = pickerState)
         }
+    }
+
+    if (showTimePicker) {
+        AlertDialog(
+            onDismissRequest = { showTimePicker = false },
+            title = { Text("Choose a time") },
+            text = { TimePicker(state = timePickerState) },
+            confirmButton = {
+                TextButton(onClick = {
+                    dueTime = LocalTime.of(timePickerState.hour, timePickerState.minute)
+                        .format(DateTimeFormatter.ofPattern("HH:mm:ss"))
+                    validationMessage = null
+                    showTimePicker = false
+                }) { Text("Set time") }
+            },
+            dismissButton = { TextButton(onClick = { showTimePicker = false }) { Text("Cancel") } }
+        )
     }
 }
 

@@ -16,6 +16,7 @@ data class ProposedVoiceAction(
     val whenText: String? = null,
     val dueDate: String? = null,
     val dueTime: String? = null,
+    val recurrenceRule: String? = null,
     val priority: Int? = null,
     val project: String? = null,
     val details: String? = null,
@@ -26,7 +27,7 @@ data class VoiceParseResult(val actions: List<ProposedVoiceAction>, val errors: 
 
 /** Strict parser for untrusted model output. It never writes to storage. */
 object VoiceActionParser {
-    private val allowedFields = setOf("action", "target", "title", "when", "priority", "project", "details")
+    private val allowedFields = setOf("action", "target", "title", "when", "priority", "project", "details", "repeat", "recurrence")
 
     fun parse(output: String, tasks: List<TaskEntity>, today: LocalDate = LocalDate.now()): VoiceParseResult {
         if (output.isBlank()) return VoiceParseResult(emptyList(), listOf("The model returned an empty response."))
@@ -76,7 +77,10 @@ object VoiceActionParser {
             val matches = target?.let { findTargets(it, tasks) }.orEmpty()
             val uniqueTarget = matches.singleOrNull()
             val whenText = fields["when"]
-            val date = whenText?.let { resolveDate(it, today) }
+            val resolvedDate = whenText?.let { resolveDate(it, today) }
+            val date = resolvedDate ?: if (type == VoiceActionType.CREATE) today.toString() to null else null
+            val recurrenceText = fields["repeat"] ?: fields["recurrence"] ?: whenText
+            val recurrence = recurrenceText?.let(::parseRecurrence)
             val priority = fields["priority"]?.let(::parsePriority)
             if (fields["priority"] != null && priority == null) {
                 errors += "Action ${index + 1} has an unrecognized priority."
@@ -86,13 +90,13 @@ object VoiceActionParser {
             val warning = when {
                 target != null && matches.isEmpty() -> "No existing task safely matches ‘$target’. Review or remove this action."
                 target != null && matches.size > 1 -> "More than one existing task matches ‘$target’. This action needs a unique target."
-                whenText != null && date == null -> "Date/time ‘$whenText’ could not be resolved; the original text is retained."
+                whenText != null && resolvedDate == null && containsDateReference(whenText) -> "Date ‘$whenText’ could not be resolved; this task is set to today. Review the date."
                 whenText != null && date != null && timeWasMentioned && date.second == null -> "Time in ‘$whenText’ could not be resolved; the original text is retained."
                 date != null && LocalDate.parse(date.first).isBefore(today) -> "The interpreted date is in the past; review it before applying."
                 else -> null
             }
             actions += ProposedVoiceAction(type, title, target, uniqueTarget?.id, whenText, date?.first, date?.second,
-                priority, fields["project"], fields["details"], warning)
+                recurrence, priority, fields["project"], fields["details"], warning)
         }
         if (actions.any { it.type == VoiceActionType.NONE } && actions.size > 1) {
             errors += "The none action cannot be mixed with other proposed actions."
@@ -125,6 +129,22 @@ object VoiceActionParser {
         else -> null
     }
 
+    private fun parseRecurrence(raw: String): String? {
+        val text = raw.lowercase(Locale.ROOT)
+        return when {
+            Regex("\\b(daily|every day|everyday|each day)\\b").containsMatchIn(text) -> "daily"
+            Regex("\\b(weekdays|every weekday|every workday)\\b").containsMatchIn(text) -> "weekdays"
+            Regex("\\b(weekly|every week|each week)\\b").containsMatchIn(text) -> "weekly"
+            Regex("\\b(monthly|every month|each month)\\b").containsMatchIn(text) -> "monthly"
+            else -> null
+        }
+    }
+
+    private fun containsDateReference(raw: String) = Regex(
+        "\\b(today|tomorrow|yesterday|next\\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)|\\d{4}-\\d{2}-\\d{2}|in\\s+\\d+\\s+days?)\\b",
+        RegexOption.IGNORE_CASE
+    ).containsMatchIn(raw)
+
     private fun resolveDate(raw: String, today: LocalDate): Pair<String, String?>? {
         val text = raw.lowercase(Locale.ROOT).trim()
         val date = when {
@@ -139,15 +159,17 @@ object VoiceActionParser {
             Regex("\\bnext\\s+sunday\\b").containsMatchIn(text) -> nextDay(today, java.time.DayOfWeek.SUNDAY)
             Regex("\\bin\\s+(\\d+)\\s+days?\\b").find(text) != null -> today.plusDays(Regex("\\bin\\s+(\\d+)\\s+days?\\b").find(text)!!.groupValues[1].toLong())
             else -> runCatching { LocalDate.parse(raw, DateTimeFormatter.ISO_LOCAL_DATE) }.getOrNull()
-        } ?: return null
-        val timeMatch = Regex("\\b(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)\\b").find(text)
+        } ?: if (parseRecurrence(text) != null || Regex("\\b(at\\s+)?\\d{1,2}(:\\d{2})?\\s*(am|pm)\\b|\\b\\d{1,2}:\\d{2}\\b").containsMatchIn(text)) today else return null
+        val timeText = text.substringAfter(" at ", text)
+        val timeMatch = Regex("\\b(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?\\b").find(timeText)
         val time = timeMatch?.let { match ->
             val hour = match.groupValues[1].toIntOrNull() ?: return@let null
             val minute = match.groupValues[2].ifBlank { "0" }.toIntOrNull() ?: return@let null
-            if (hour !in 1..12 || minute !in 0..59) return@let null
+            val meridiem = match.groupValues[3]
+            if (hour !in 0..23 || minute !in 0..59 || (meridiem.isNotBlank() && hour !in 1..12)) return@let null
             val hour24 = when {
-                match.groupValues[3] == "pm" && hour != 12 -> hour + 12
-                match.groupValues[3] == "am" && hour == 12 -> 0
+                meridiem == "pm" && hour != 12 -> hour + 12
+                meridiem == "am" && hour == 12 -> 0
                 else -> hour
             }
             LocalTime.of(hour24, minute).format(DateTimeFormatter.ofPattern("HH:mm:ss"))

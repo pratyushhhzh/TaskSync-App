@@ -20,7 +20,7 @@ class OnnxGoldenInferenceTest {
         for (index in 0 until cases.length()) {
             val test = cases.getJSONObject(index)
             val outputLimit = test.getJSONArray("expected_ids").length()
-            val result = model.generate(test.getString("input_text"), outputLimit)
+            val result = model.generate(test.getString("input_text"), outputLimit, requireEos = false)
             val expected = test.getString("expected_text")
             val actual = result.getOrNull()
             val passed = actual == expected

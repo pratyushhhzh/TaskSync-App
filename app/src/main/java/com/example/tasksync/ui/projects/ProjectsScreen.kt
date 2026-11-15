@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -30,6 +31,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -75,8 +77,10 @@ fun ProjectsScreen(viewModel: TaskListViewModel = viewModel()) {
         } else {
             ProjectBoardHeader(
                 project = selectedProject!!,
+                projects = projects,
                 tasks = projectTasks,
                 onBack = { selectedProject = null },
+                onSelectProject = { selectedProject = it },
                 modifier = Modifier.fillMaxSize().padding(padding)
             ) {
                 ProjectKanbanBoard(
@@ -145,7 +149,7 @@ fun ProjectsScreen(viewModel: TaskListViewModel = viewModel()) {
 @Composable
 private fun ProjectList(projects: List<ProjectEntity>, modifier: Modifier, onSelect: (ProjectEntity) -> Unit) {
     Column(modifier) {
-        Text("Projects", style = MaterialTheme.typography.headlineSmall)
+        Text("Projects", style = MaterialTheme.typography.headlineLarge)
         Text("A focused board for every goal.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(16.dp))
         if (projects.isEmpty()) {
@@ -188,20 +192,29 @@ private fun ProjectList(projects: List<ProjectEntity>, modifier: Modifier, onSel
 @Composable
 private fun ProjectBoardHeader(
     project: ProjectEntity,
+    projects: List<ProjectEntity>,
     tasks: List<TaskEntity>,
     onBack: () -> Unit,
+    onSelectProject: (ProjectEntity) -> Unit,
     modifier: Modifier,
     board: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit
 ) {
     Column(modifier) {
+        Text("Projects", style = MaterialTheme.typography.headlineLarge, modifier = Modifier.padding(start = 18.dp, top = 12.dp, bottom = 8.dp))
         Row(
-            modifier = Modifier.fillMaxWidth().clickable(onClick = onBack).padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 18.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "All projects")
-            Text("  All projects", style = MaterialTheme.typography.labelLarge)
+            projects.forEach { item ->
+                androidx.compose.material3.FilterChip(
+                    selected = item.id == project.id,
+                    onClick = { onSelectProject(item) },
+                    label = { Text(item.name) }
+                )
+            }
+            androidx.compose.material3.FilterChip(selected = false, onClick = onBack, label = { Text("All") })
         }
-        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.Top) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.Top) {
             Column(Modifier.weight(1f)) {
                 Text(project.name, style = MaterialTheme.typography.headlineSmall)
                 project.description?.takeIf(String::isNotBlank)?.let {
@@ -219,14 +232,6 @@ private fun ProjectBoardHeader(
             }
         }
         Spacer(Modifier.height(8.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("PROJECT BOARD", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text("${tasks.count { it.status != "completed" }} active · ${tasks.count { it.status == "completed" }} done", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
         board()
     }
 }

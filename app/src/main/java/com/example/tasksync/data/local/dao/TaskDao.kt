@@ -6,6 +6,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
+import androidx.room.Transaction
 import com.example.tasksync.data.local.entity.SubtaskEntity
 import com.example.tasksync.data.local.entity.TaskEntity
 import kotlinx.coroutines.flow.Flow
@@ -15,6 +16,9 @@ interface TaskDao {
 
     @Query("SELECT * FROM tasks ORDER BY CASE WHEN status = 'completed' THEN 1 ELSE 0 END, priority ASC, CASE WHEN dueDate IS NULL THEN 1 ELSE 0 END, dueDate ASC, createdAt DESC")
     fun getAllTasks(): Flow<List<TaskEntity>>
+
+    @Query("SELECT * FROM tasks")
+    suspend fun getAllTasksOnce(): List<TaskEntity>
 
     @Query("SELECT * FROM tasks WHERE status != 'completed' AND dueDate IS NULL AND projectId IS NULL ORDER BY priority ASC, createdAt DESC")
     fun getInboxTasks(): Flow<List<TaskEntity>>
@@ -50,6 +54,12 @@ interface TaskDao {
     @Query("SELECT * FROM subtasks WHERE taskId = :taskId ORDER BY sortOrder ASC")
     fun getSubtasksForTask(taskId: String): Flow<List<SubtaskEntity>>
 
+    @Query("SELECT * FROM subtasks WHERE taskId = :taskId ORDER BY sortOrder ASC")
+    suspend fun getSubtasksForTaskOnce(taskId: String): List<SubtaskEntity>
+
+    @Query("DELETE FROM subtasks WHERE taskId = :taskId")
+    suspend fun deleteSubtasksForTask(taskId: String)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertSubtask(subtask: SubtaskEntity)
 
@@ -58,4 +68,12 @@ interface TaskDao {
 
     @Delete
     suspend fun deleteSubtask(subtask: SubtaskEntity)
+
+    @Transaction
+    suspend fun deleteTaskAndSubtasks(task: TaskEntity): List<SubtaskEntity> {
+        val subtasks = getSubtasksForTaskOnce(task.id)
+        deleteSubtasksForTask(task.id)
+        deleteTask(task)
+        return subtasks
+    }
 }

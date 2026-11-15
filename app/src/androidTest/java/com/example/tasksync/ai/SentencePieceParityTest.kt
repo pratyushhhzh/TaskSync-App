@@ -41,9 +41,11 @@ class SentencePieceParityTest {
         repeat(3) {
             TaskSyncTokenizer.fromFile(model).use { tokenizer ->
                 assertEquals(listOf(TaskSyncTokenizer.EOS_ID), tokenizer.encode(""))
+                assertTrue(!tokenizer.encodeWithStatus("short request").wasTruncated)
                 val longInput = tokenizer.encode("task ".repeat(400))
                 assertEquals(TaskSyncTokenizer.MAX_INPUT_TOKENS, longInput.size)
                 assertEquals(TaskSyncTokenizer.EOS_ID, longInput.last())
+                assertTrue(tokenizer.encodeWithStatus("task ".repeat(400)).wasTruncated)
                 val ids = tokenizer.encode("Hello world")
                 assertEquals("Hello world", tokenizer.decode(listOf(0) + ids + listOf(0, 1)))
             }

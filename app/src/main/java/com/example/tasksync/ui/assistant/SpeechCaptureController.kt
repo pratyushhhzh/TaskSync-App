@@ -17,7 +17,7 @@ class SpeechCaptureController(
     private val onStarting: () -> Unit,
     private val onListening: () -> Unit,
     private val onPartialTranscript: (String) -> Unit,
-    private val onTranscript: (String, List<String>) -> Unit,
+    private val onTranscript: (String) -> Unit,
     private val onError: (String) -> Unit
 ) {
     private val appContext = context.applicationContext
@@ -25,7 +25,6 @@ class SpeechCaptureController(
     private var recognizer: SpeechRecognizer? = null
     private var completedTranscript = ""
     private var currentPartial = ""
-    private var finalAlternatives = emptyList<String>()
     private var isListening = false
     private var readyNotified = false
     private var stopRequested = false
@@ -44,7 +43,6 @@ class SpeechCaptureController(
             cancelPendingRestart()
             completedTranscript = ""
             currentPartial = ""
-            finalAlternatives = emptyList()
             restartFailures = 0
             readyNotified = false
             recreateBeforeRestart = false
@@ -82,7 +80,6 @@ class SpeechCaptureController(
         destroyRecognizer()
         completedTranscript = ""
         currentPartial = ""
-        finalAlternatives = emptyList()
     }
 
     private fun startSegment() {
@@ -91,9 +88,9 @@ class SpeechCaptureController(
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageTag)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            // Keep a few alternatives so the user can select the transcript that
-            // best matches what they actually said.
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, MAX_TRANSCRIPT_CANDIDATES)
+            // Keep recognition limited to plain transcript capture. The AI stage
+            // interprets the text only after the user reviews and submits it.
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             // Do not configure short silence thresholds. Silence is a segment boundary,
             // not an instruction to finish the user's push-to-talk session.
         }
@@ -144,18 +141,9 @@ class SpeechCaptureController(
         }.also { handler.postDelayed(it, delayMillis) }
     }
 
-    private fun acceptSegment(candidates: List<String>?) {
-        val cleanCandidates = candidates.orEmpty().map { it.trim() }.filter(String::isNotBlank).distinct()
-        val fragment = cleanCandidates.firstOrNull() ?: currentPartial
-        val precedingText = completedTranscript
+    private fun acceptSegment(candidate: String?) {
+        val fragment = candidate?.trim()?.takeIf(String::isNotBlank) ?: currentPartial
         completedTranscript = VoiceTranscriptStitcher.append(completedTranscript, fragment)
-        if (cleanCandidates.isNotEmpty()) {
-            finalAlternatives = cleanCandidates.drop(1)
-                .map { VoiceTranscriptStitcher.append(precedingText, it) }
-                .filter { it != completedTranscript }
-        } else if (currentPartial.isNotBlank()) {
-            finalAlternatives = emptyList()
-        }
         currentPartial = ""
         onPartialTranscript(completedTranscript)
     }
@@ -166,7 +154,7 @@ class SpeechCaptureController(
         cancelPendingRestart()
         val transcript = VoiceTranscriptStitcher.append(completedTranscript, currentPartial)
         currentPartial = ""
-        if (transcript.isBlank()) onError(emptyMessage) else onTranscript(transcript, finalAlternatives)
+        if (transcript.isBlank()) onError(emptyMessage) else onTranscript(transcript)
     }
 
     private fun cancelPendingRestart() {
@@ -199,18 +187,19 @@ class SpeechCaptureController(
 
         override fun onPartialResults(partialResults: Bundle?) {
             notifyReadyForSpeech()
-            currentPartial = partialResults
+            val partial = partialResults
                 ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 ?.firstOrNull()
                 ?.trim()
-                .orEmpty()
+                ?.takeIf(String::isNotBlank)
+            if (partial != null) currentPartial = partial
             onPartialTranscript(VoiceTranscriptStitcher.append(completedTranscript, currentPartial))
         }
 
         override fun onResults(results: Bundle?) {
             notifyReadyForSpeech()
-            val candidates = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            acceptSegment(candidates)
+            val transcript = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+            acceptSegment(transcript)
             restartFailures = 0
             if (stopRequested) {
                 finishWithAccumulatedSpeech("I couldn't hear a clear request. Try speaking again.")
@@ -281,7 +270,6 @@ class SpeechCaptureController(
         const val SEGMENT_RESTART_DELAY_MS = 700L
         const val RETRY_DELAY_MS = 1_000L
         const val MAX_RESTART_FAILURES = 5
-        const val MAX_TRANSCRIPT_CANDIDATES = 3
     }
 }
 

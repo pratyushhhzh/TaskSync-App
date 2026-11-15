@@ -3,6 +3,8 @@ package com.example.tasksync.ai
 import java.io.Closeable
 import java.io.File
 
+data class TokenizerEncoding(val tokenIds: List<Int>, val wasTruncated: Boolean)
+
 /** SentencePiece tokenizer for the supplied T5 model. */
 class TaskSyncTokenizer private constructor(modelFile: File) : Closeable {
     private var nativeHandle: Long = nativeCreate(modelFile.absolutePath)
@@ -12,14 +14,18 @@ class TaskSyncTokenizer private constructor(modelFile: File) : Closeable {
     }
 
     @Synchronized
-    fun encode(text: String): List<Int> {
+    fun encode(text: String): List<Int> = encodeWithStatus(text).tokenIds
+
+    @Synchronized
+    fun encodeWithStatus(text: String): TokenizerEncoding {
         checkOpen()
         val pieces = nativeEncode(nativeHandle, text)
         val maxPieceCount = MAX_INPUT_TOKENS - 1 // reserve one slot for EOS
-        return buildList(minOf(pieces.size, maxPieceCount) + 1) {
+        val tokenIds = buildList(minOf(pieces.size, maxPieceCount) + 1) {
             for (index in 0 until minOf(pieces.size, maxPieceCount)) add(pieces[index])
             add(EOS_ID)
         }
+        return TokenizerEncoding(tokenIds, pieces.size > maxPieceCount)
     }
 
     @Synchronized

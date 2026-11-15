@@ -2,7 +2,6 @@ package com.example.tasksync.ui.theme
 
 import android.app.Activity
 import android.os.Build
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
@@ -12,11 +11,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.graphics.Color
 import androidx.core.view.WindowCompat
 
 private val LightColorScheme = lightColorScheme(
     primary = PrimaryIndigo,
-    onPrimary = LightSurface,
+    onPrimary = Color(0xFF23294F),
     secondary = SecondaryViolet,
     background = LightBackground,
     onBackground = LightOnBackground,
@@ -24,12 +24,14 @@ private val LightColorScheme = lightColorScheme(
     onSurface = LightOnBackground,
     surfaceVariant = LightSurfaceBorder,
     onSurfaceVariant = LightOnSurfaceMuted,
+    outline = LightSurfaceBorder,
+    outlineVariant = LightSurfaceBorder.copy(alpha = 0.7f),
     error = StatusError
 )
 
 private val DarkColorScheme = darkColorScheme(
     primary = PrimaryIndigo,
-    onPrimary = LightSurface,
+    onPrimary = Color(0xFF23294F),
     secondary = SecondaryViolet,
     background = DarkBackground,
     onBackground = DarkOnBackground,
@@ -37,12 +39,14 @@ private val DarkColorScheme = darkColorScheme(
     onSurface = DarkOnBackground,
     surfaceVariant = DarkSurfaceBorder,
     onSurfaceVariant = DarkOnSurfaceMuted,
+    outline = DarkSurfaceBorder,
+    outlineVariant = DarkSurfaceBorder.copy(alpha = 0.7f),
     error = StatusError
 )
 
 @Composable
 fun TaskSyncTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    darkTheme: Boolean = true,
     dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
