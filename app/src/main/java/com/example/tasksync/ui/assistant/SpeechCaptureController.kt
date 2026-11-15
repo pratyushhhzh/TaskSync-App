@@ -31,7 +31,7 @@ private object AndroidSpeechRecognitionProvider : SpeechRecognitionProvider {
         SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
 
     override fun create(context: Context, onDevice: Boolean): SpeechRecognizerHandle {
-        val recognizer = if (onDevice) SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+        val recognizer = if (onDevice && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
         else SpeechRecognizer.createSpeechRecognizer(context)
         return object : SpeechRecognizerHandle {
             override fun setRecognitionListener(listener: RecognitionListener) = recognizer.setRecognitionListener(listener)

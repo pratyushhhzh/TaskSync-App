@@ -5,6 +5,9 @@ import com.example.tasksync.data.local.entity.TaskEntity
 import com.example.tasksync.data.local.entity.SubtaskEntity
 import kotlinx.coroutines.flow.Flow
 import com.example.tasksync.data.reminder.TaskReminderScheduler
+import com.example.tasksync.data.calendar.CalendarTaskSync
+import com.example.tasksync.data.calendar.GoogleDeviceCalendar
+import com.example.tasksync.widget.TaskSyncWidgetUpdater
 import android.content.Context
 import java.time.LocalDate
 
@@ -13,6 +16,7 @@ class TaskRepository(
     private val taskDao: TaskDao,
     private val appContext: Context
 ) {
+    private val calendarTaskSync = CalendarTaskSync(appContext)
     val allTasks: Flow<List<TaskEntity>> = taskDao.getAllTasks()
     val inboxTasks: Flow<List<TaskEntity>> = taskDao.getInboxTasks()
 
@@ -52,6 +56,8 @@ class TaskRepository(
         )
         taskDao.insertTask(task)
         scheduleReminder(task)
+        synchronizeCalendar(task)
+        refreshTaskWidget()
         return task
     }
 
@@ -59,24 +65,32 @@ class TaskRepository(
         val updatedTask = task.copy(updatedAt = System.currentTimeMillis())
         taskDao.updateTask(updatedTask)
         scheduleReminder(updatedTask)
+        synchronizeCalendar(updatedTask)
+        refreshTaskWidget()
     }
 
     suspend fun restoreTask(task: TaskEntity, subtasks: List<SubtaskEntity> = emptyList()) {
         taskDao.insertTask(task)
         for (subtask in subtasks) taskDao.insertSubtask(subtask)
         scheduleReminder(task)
+        synchronizeCalendar(task)
+        refreshTaskWidget()
     }
 
     suspend fun markTaskCompleted(taskId: String): TaskEntity? {
         val task = taskDao.getTaskById(taskId) ?: return null
         taskDao.updateTaskStatus(taskId, "completed", System.currentTimeMillis())
         TaskReminderScheduler.cancel(appContext, taskId)
-        return createNextOccurrence(task)
+        taskDao.getTaskById(taskId)?.let { synchronizeCalendar(it, task) }
+        val next = createNextOccurrence(task)
+        refreshTaskWidget()
+        return next
     }
 
     suspend fun reopenTask(taskId: String, newStatus: String = "inbox") {
         taskDao.updateTaskStatus(taskId, newStatus, System.currentTimeMillis())
-        taskDao.getTaskById(taskId)?.let(::scheduleReminder)
+        taskDao.getTaskById(taskId)?.let { scheduleReminder(it); synchronizeCalendar(it) }
+        refreshTaskWidget()
     }
 
     suspend fun setTaskStatus(taskId: String, status: String) {
@@ -85,19 +99,66 @@ class TaskRepository(
             markTaskCompleted(taskId)
         } else {
             taskDao.updateTaskStatus(taskId, status, System.currentTimeMillis())
-            taskDao.getTaskById(taskId)?.let(::scheduleReminder)
+            taskDao.getTaskById(taskId)?.let {
+                scheduleReminder(it)
+                synchronizeCalendar(it)
+            }
+            refreshTaskWidget()
         }
     }
 
     suspend fun deleteTask(task: TaskEntity): List<SubtaskEntity> {
         val subtasks = taskDao.deleteTaskAndSubtasks(task)
         TaskReminderScheduler.cancel(appContext, task.id)
+        synchronizeCalendar(null, task)
+        refreshTaskWidget()
         return subtasks
     }
 
     fun synchronizeReminder(taskId: String, taskAfterTransaction: TaskEntity?) {
         if (taskAfterTransaction == null) TaskReminderScheduler.cancel(appContext, taskId)
         else scheduleReminder(taskAfterTransaction)
+    }
+
+    fun refreshTaskWidget() = TaskSyncWidgetUpdater.requestRefresh(appContext)
+
+    suspend fun synchronizeCalendar(taskAfterTransaction: TaskEntity?, taskBeforeTransaction: TaskEntity? = null): String? =
+        runCatching {
+            if (taskAfterTransaction == null) {
+                taskBeforeTransaction?.let { calendarTaskSync.deleteEvent(it) }
+            } else {
+                val synced = calendarTaskSync.syncTask(taskAfterTransaction)
+                if (synced.googleCalendarId != taskAfterTransaction.googleCalendarId ||
+                    synced.googleCalendarEventId != taskAfterTransaction.googleCalendarEventId
+                ) taskDao.updateTask(synced)
+            }
+            null
+        }.getOrElse { "Google Calendar sync failed: ${it.message ?: "calendar unavailable"}." }
+
+    val connectedGoogleCalendarLabel: String? get() = calendarTaskSync.selectedCalendarLabel
+
+    suspend fun availableGoogleCalendars(): List<GoogleDeviceCalendar> = calendarTaskSync.availableGoogleCalendars()
+
+    suspend fun connectGoogleCalendar(calendar: GoogleDeviceCalendar): List<String> {
+        calendarTaskSync.connect(calendar)
+        val failures = mutableListOf<String>()
+        taskDao.getAllTasksOnce().filter { it.status != "completed" && !it.dueDate.isNullOrBlank() }.forEach { task ->
+            synchronizeCalendar(task)?.let(failures::add)
+        }
+        refreshTaskWidget()
+        return failures
+    }
+
+    suspend fun disconnectGoogleCalendar(): List<String> {
+        val failures = mutableListOf<String>()
+        taskDao.getAllTasksOnce().filter { it.googleCalendarEventId != null }.forEach { task ->
+            val failure = runCatching { calendarTaskSync.deleteEvent(task) }.exceptionOrNull()
+            if (failure == null) taskDao.updateTask(task.copy(googleCalendarId = null, googleCalendarEventId = null))
+            else failures += "Could not remove one linked Google Calendar event: ${failure.message ?: "calendar unavailable"}."
+        }
+        if (failures.isEmpty()) calendarTaskSync.disconnect()
+        refreshTaskWidget()
+        return failures
     }
 
     private fun scheduleReminder(task: TaskEntity) {
@@ -134,5 +195,7 @@ class TaskRepository(
         buildNextOccurrence(task)?.also {
             taskDao.insertTask(it)
             scheduleReminder(it)
+            synchronizeCalendar(it)
+            refreshTaskWidget()
         }
 }

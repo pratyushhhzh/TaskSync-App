@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">TaskSync</string>
+    <string name="widget_description">Quickly add tasks by voice and see your open task list.</string>
 </resources>

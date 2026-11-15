@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#171A2B"
+    android:orientation="vertical"
+    android:padding="14dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="TaskSync"
+            android:textColor="#FFFFFF"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/widget_mic"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:contentDescription="Add a task with voice"
+            android:minWidth="64dp"
+            android:text="🎙 Mic"
+            android:textAllCaps="false" />
+    </LinearLayout>
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="5dp"
+        android:text="OPEN TASKS"
+        android:textColor="#AEB4D0"
+        android:textSize="10sp"
+        android:textStyle="bold" />
+
+    <TextView android:id="@+id/widget_task_1" style="@style/TaskSyncWidgetTask" />
+    <TextView android:id="@+id/widget_task_2" style="@style/TaskSyncWidgetTask" />
+    <TextView android:id="@+id/widget_task_3" style="@style/TaskSyncWidgetTask" />
+
+    <TextView
+        android:id="@+id/widget_all_tasks"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="end"
+        android:paddingTop="4dp"
+        android:text="View all tasks  →"
+        android:textColor="#C5C9FF"
+        android:textSize="12sp"
+        android:textStyle="bold" />
+</LinearLayout>

@@ -20,5 +20,7 @@ data class TaskEntity(
     val assigneeId: String? = null,
     val recurrenceRule: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+    val googleCalendarId: Long? = null,
+    val googleCalendarEventId: Long? = null
 )

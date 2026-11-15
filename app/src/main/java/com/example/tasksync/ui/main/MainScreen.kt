@@ -38,12 +38,15 @@ import com.example.tasksync.ui.navigation.Screen
 import com.example.tasksync.ui.tasks.TaskListViewModel
 
 @Composable
-fun MainScreen() {
+fun MainScreen(openVoiceAssistantSignal: Int = 0) {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route ?: Screen.Tasks.route
     val taskViewModel: TaskListViewModel = viewModel()
     var showVoiceAssistant by remember { mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(openVoiceAssistantSignal) {
+        if (openVoiceAssistantSignal > 0) showVoiceAssistant = true
+    }
     val screens = Screen.bottomNavScreens
 
     Scaffold(

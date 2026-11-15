@@ -10,6 +10,7 @@ import com.example.tasksync.data.local.entity.ProjectEntity
 import com.example.tasksync.data.local.entity.SubtaskEntity
 import com.example.tasksync.data.repository.ProjectRepository
 import com.example.tasksync.data.repository.TaskRepository
+import com.example.tasksync.data.calendar.GoogleDeviceCalendar
 import com.example.tasksync.ai.ProposedVoiceAction
 import com.example.tasksync.ai.VoiceActionType
 import kotlinx.coroutines.flow.Flow
@@ -106,12 +107,21 @@ class TaskListViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    val connectedGoogleCalendarLabel: String? get() = repository.connectedGoogleCalendarLabel
+
+    suspend fun availableGoogleCalendars(): List<GoogleDeviceCalendar> = repository.availableGoogleCalendars()
+
+    suspend fun connectGoogleCalendar(calendar: GoogleDeviceCalendar): List<String> = repository.connectGoogleCalendar(calendar)
+
+    suspend fun disconnectGoogleCalendar(): List<String> = repository.disconnectGoogleCalendar()
+
     /** Applies the reviewed action batch atomically; reminders are synchronized after commit. */
     suspend fun applyConfirmedVoiceActions(actions: List<ProposedVoiceAction>): List<String> {
         check(!isApplyingVoiceBatch) { "These task changes are already being saved." }
         if (actions.isEmpty()) return emptyList()
         isApplyingVoiceBatch = true
         val touchedTaskIds = linkedSetOf<String>()
+        var tasksBeforeBatch = emptyMap<String, TaskEntity>()
         try {
             val duplicateTargets = actions.mapNotNull { action ->
                 if (action.type in setOf(VoiceActionType.UPDATE, VoiceActionType.COMPLETE, VoiceActionType.DELETE)) action.targetTaskId else null
@@ -120,6 +130,7 @@ class TaskListViewModel(application: Application) : AndroidViewModel(application
 
             database.withTransaction {
                 val current = database.taskDao().getAllTasksOnce().associateBy { it.id }.toMutableMap()
+                tasksBeforeBatch = current.toMap()
                 actions.forEach { action ->
                     when (action.type) {
                         VoiceActionType.CREATE -> {
@@ -185,7 +196,9 @@ class TaskListViewModel(application: Application) : AndroidViewModel(application
                 val task = runCatching { database.taskDao().getTaskById(id) }.getOrNull()
                 runCatching { repository.synchronizeReminder(id, task) }
                     .onFailure { reminderErrors += "Reminder for ‘${task?.title ?: "task"}’ could not be scheduled." }
+                repository.synchronizeCalendar(task, tasksBeforeBatch[id])?.let(reminderErrors::add)
             }
+            repository.refreshTaskWidget()
             return reminderErrors
         } catch (error: Throwable) {
             val restored = runCatching { database.taskDao().getAllTasksOnce().associateBy { it.id } }.getOrDefault(emptyMap())

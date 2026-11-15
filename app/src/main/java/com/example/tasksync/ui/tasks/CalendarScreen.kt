@@ -1,5 +1,9 @@
 package com.example.tasksync.ui.tasks
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -23,28 +27,37 @@ import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.tasksync.data.calendar.GoogleDeviceCalendar
 import com.example.tasksync.data.local.entity.TaskEntity
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
+import java.util.Locale
+import kotlinx.coroutines.launch
 
 @Composable
 fun CalendarScreen(viewModel: TaskListViewModel = viewModel()) {
@@ -53,6 +66,13 @@ fun CalendarScreen(viewModel: TaskListViewModel = viewModel()) {
     var selectedDate by remember { mutableStateOf(LocalDate.now()) }
     var selectedTask by remember { mutableStateOf<TaskEntity?>(null) }
     var showTaskSheet by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var connectedCalendarLabel by remember(viewModel) { mutableStateOf(viewModel.connectedGoogleCalendarLabel) }
+    var availableCalendars by remember { mutableStateOf<List<GoogleDeviceCalendar>>(emptyList()) }
+    var showCalendarPicker by remember { mutableStateOf(false) }
+    var showDisconnectPrompt by remember { mutableStateOf(false) }
+    var calendarMessage by remember { mutableStateOf("") }
     val subtasks by remember(selectedTask?.id) { viewModel.subtasksForTask(selectedTask?.id.orEmpty()) }
         .collectAsState(initial = emptyList())
     val weekStart = selectedDate.with(java.time.temporal.TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
@@ -61,6 +81,23 @@ fun CalendarScreen(viewModel: TaskListViewModel = viewModel()) {
     val untimedTasks = dateTasks.filter { it.dueTime.isNullOrBlank() }
     val timedTasks = dateTasks.filterNot { it.dueTime.isNullOrBlank() }
     val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+
+    fun loadGoogleCalendars() {
+        scope.launch {
+            runCatching { viewModel.availableGoogleCalendars() }
+                .onSuccess { calendars ->
+                    availableCalendars = calendars
+                    if (calendars.isEmpty()) calendarMessage = "No writable Google calendars are available on this device. Add a Google account and enable calendar sync, then try again."
+                    else showCalendarPicker = true
+                }
+                .onFailure { calendarMessage = it.message ?: "Could not read calendars on this device." }
+        }
+    }
+
+    val calendarPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+        if (grants[Manifest.permission.READ_CALENDAR] == true && grants[Manifest.permission.WRITE_CALENDAR] == true) loadGoogleCalendars()
+        else calendarMessage = "Calendar access is needed to add and update TaskSync events in your selected Google calendar."
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -83,6 +120,33 @@ fun CalendarScreen(viewModel: TaskListViewModel = viewModel()) {
                     }
                     IconButton(onClick = { selectedDate = selectedDate.minusWeeks(1) }) { Icon(Icons.Default.ChevronLeft, contentDescription = "Previous week") }
                     IconButton(onClick = { selectedDate = selectedDate.plusWeeks(1) }) { Icon(Icons.Default.ChevronRight, contentDescription = "Next week") }
+                }
+            }
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(Modifier.weight(1f).padding(end = 8.dp)) {
+                        Text(
+                            text = connectedCalendarLabel?.let { "Google Calendar · $it" } ?: "Google Calendar not connected",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2
+                        )
+                        if (calendarMessage.isNotBlank()) Text(calendarMessage, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
+                    if (connectedCalendarLabel == null) {
+                        Button(onClick = {
+                            val hasPermissions = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CALENDAR) == PackageManager.PERMISSION_GRANTED &&
+                                ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_CALENDAR) == PackageManager.PERMISSION_GRANTED
+                            if (hasPermissions) loadGoogleCalendars()
+                            else calendarPermissionLauncher.launch(arrayOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR))
+                        }) { Text("Connect") }
+                    } else {
+                        TextButton(onClick = { showDisconnectPrompt = true }) { Text("Disconnect") }
+                    }
                 }
             }
             item {
@@ -116,7 +180,7 @@ fun CalendarScreen(viewModel: TaskListViewModel = viewModel()) {
                     modifier = Modifier.fillMaxWidth().height(if (hourTasks.isEmpty()) 66.dp else 78.dp),
                     verticalAlignment = Alignment.Top
                 ) {
-                    Text(String.format("%02d:00", hour), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(48.dp).padding(top = 2.dp))
+                    Text(String.format(Locale.ROOT, "%02d:00", hour), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(48.dp).padding(top = 2.dp))
                     Column(Modifier.weight(1f)) {
                         Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)))
                         hourTasks.forEach { task ->
@@ -147,6 +211,58 @@ fun CalendarScreen(viewModel: TaskListViewModel = viewModel()) {
                 onAddSubtask = { title -> selectedTask?.let { viewModel.addSubtask(it.id, title) } },
                 onToggleSubtask = viewModel::toggleSubtask,
                 onDeleteSubtask = viewModel::deleteSubtask
+            )
+        }
+
+        if (showCalendarPicker) {
+            AlertDialog(
+                onDismissRequest = { showCalendarPicker = false },
+                title = { Text("Choose a Google calendar") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Dated TaskSync tasks sync one way. Tasks with no time become all-day events; timed tasks use a 30-minute event.", style = MaterialTheme.typography.bodySmall)
+                        availableCalendars.forEach { calendar ->
+                            TextButton(
+                                onClick = {
+                                    showCalendarPicker = false
+                                    scope.launch {
+                                        calendarMessage = "Syncing dated tasks…"
+                                        val errors = viewModel.connectGoogleCalendar(calendar)
+                                        connectedCalendarLabel = "${calendar.displayName} · ${calendar.accountName}"
+                                        calendarMessage = if (errors.isEmpty()) "Dated tasks are syncing to this calendar." else "Connected, but ${errors.size} event(s) could not sync. ${errors.first()}"
+                                    }
+                                }
+                            ) {
+                                Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
+                                    Text(calendar.displayName)
+                                    Text(calendar.accountName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = { TextButton(onClick = { showCalendarPicker = false }) { Text("Cancel") } }
+            )
+        }
+
+        if (showDisconnectPrompt) {
+            AlertDialog(
+                onDismissRequest = { showDisconnectPrompt = false },
+                title = { Text("Disconnect Google Calendar?") },
+                text = { Text("TaskSync will remove its linked events from this calendar and stop syncing dated tasks.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showDisconnectPrompt = false
+                        scope.launch {
+                            val errors = viewModel.disconnectGoogleCalendar()
+                            if (errors.isEmpty()) {
+                                connectedCalendarLabel = null
+                                calendarMessage = "Google Calendar disconnected."
+                            } else calendarMessage = "Some linked events could not be removed. ${errors.first()}"
+                        }
+                    }) { Text("Disconnect") }
+                },
+                dismissButton = { TextButton(onClick = { showDisconnectPrompt = false }) { Text("Cancel") } }
             )
         }
     }

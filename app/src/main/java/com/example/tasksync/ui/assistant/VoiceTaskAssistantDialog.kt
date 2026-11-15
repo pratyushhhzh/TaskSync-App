@@ -259,7 +259,7 @@ fun VoiceTaskAssistantDialog(onDismiss: () -> Unit, viewModel: TaskListViewModel
                                 runCatching { viewModel.applyConfirmedVoiceActions(proposedActions.toList()) }
                                     .onSuccess { warnings ->
                                         state = VoiceDialogState.Done
-                                        message = if (warnings.isEmpty()) "Your confirmed tasks were saved." else "Tasks were saved, but ${warnings.size} reminder(s) could not be scheduled."
+                                        message = if (warnings.isEmpty()) "Your confirmed tasks were saved." else "Tasks were saved, but ${warnings.size} reminder or calendar sync operation(s) could not finish."
                                     }
                                     .onFailure { state = VoiceDialogState.Actions; message = "Could not save the changes: ${it.message ?: "storage error"}. No partial changes were kept; review and retry." }
                             }
