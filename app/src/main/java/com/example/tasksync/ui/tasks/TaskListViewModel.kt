@@ -1,7 +1,6 @@
 package com.example.tasksync.ui.tasks
 
 import android.app.Application
-import androidx.room.withTransaction
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.tasksync.data.local.AppDatabase
@@ -11,8 +10,6 @@ import com.example.tasksync.data.local.entity.SubtaskEntity
 import com.example.tasksync.data.repository.ProjectRepository
 import com.example.tasksync.data.repository.TaskRepository
 import com.example.tasksync.data.calendar.GoogleDeviceCalendar
-import com.example.tasksync.ai.ProposedVoiceAction
-import com.example.tasksync.ai.VoiceActionType
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.SharingStarted
@@ -29,7 +26,6 @@ class TaskListViewModel(application: Application) : AndroidViewModel(application
     val allTasks: StateFlow<List<TaskEntity>>
     val inboxTasks: StateFlow<List<TaskEntity>>
     val projects: StateFlow<List<ProjectEntity>>
-    private var isApplyingVoiceBatch = false
 
     init {
         val taskDao = database.taskDao()
@@ -114,102 +110,6 @@ class TaskListViewModel(application: Application) : AndroidViewModel(application
     suspend fun connectGoogleCalendar(calendar: GoogleDeviceCalendar): List<String> = repository.connectGoogleCalendar(calendar)
 
     suspend fun disconnectGoogleCalendar(): List<String> = repository.disconnectGoogleCalendar()
-
-    /** Applies the reviewed action batch atomically; reminders are synchronized after commit. */
-    suspend fun applyConfirmedVoiceActions(actions: List<ProposedVoiceAction>): List<String> {
-        check(!isApplyingVoiceBatch) { "These task changes are already being saved." }
-        if (actions.isEmpty()) return emptyList()
-        isApplyingVoiceBatch = true
-        val touchedTaskIds = linkedSetOf<String>()
-        var tasksBeforeBatch = emptyMap<String, TaskEntity>()
-        try {
-            val duplicateTargets = actions.mapNotNull { action ->
-                if (action.type in setOf(VoiceActionType.UPDATE, VoiceActionType.COMPLETE, VoiceActionType.DELETE)) action.targetTaskId else null
-            }.groupingBy { it }.eachCount().filterValues { it > 1 }.keys
-            require(duplicateTargets.isEmpty()) { "More than one proposed change targets the same task. Remove the duplicate change and try again." }
-
-            database.withTransaction {
-                val current = database.taskDao().getAllTasksOnce().associateBy { it.id }.toMutableMap()
-                tasksBeforeBatch = current.toMap()
-                actions.forEach { action ->
-                    when (action.type) {
-                        VoiceActionType.CREATE -> {
-                            val title = action.title.trim()
-                            require(title.isNotBlank()) { "A proposed task has no title." }
-                            val created = TaskEntity(
-                                id = "task_${System.currentTimeMillis()}_${(1000..9999).random()}",
-                                userId = "local_user",
-                                title = title,
-                                dueDate = action.dueDate,
-                                dueTime = action.dueTime,
-                                reminderEnabled = action.dueTime != null,
-                                recurrenceRule = action.recurrenceRule,
-                                priority = 4
-                            )
-                            touchedTaskIds += created.id
-                            database.taskDao().insertTask(created)
-                            current[created.id] = created
-                        }
-                        VoiceActionType.UPDATE -> {
-                            val id = action.targetTaskId ?: error("Missing task target.")
-                            val old = current[id] ?: error("The selected target task no longer exists.")
-                            val updated = old.copy(
-                                title = action.title.takeIf(String::isNotBlank) ?: old.title,
-                                dueDate = action.dueDate ?: old.dueDate,
-                                dueTime = action.dueTime ?: old.dueTime,
-                                recurrenceRule = action.recurrenceRule ?: old.recurrenceRule,
-                                reminderEnabled = if (action.dueTime != null) true else old.reminderEnabled,
-                                updatedAt = System.currentTimeMillis()
-                            )
-                            touchedTaskIds += id
-                            database.taskDao().updateTask(updated)
-                            current[id] = updated
-                        }
-                        VoiceActionType.COMPLETE -> {
-                            val id = action.targetTaskId ?: error("Missing task target.")
-                            val old = current[id] ?: error("The selected target task no longer exists.")
-                            touchedTaskIds += id
-                            check(database.taskDao().updateTaskStatus(id, "completed", System.currentTimeMillis()) == 1) {
-                                "The selected task could not be completed."
-                            }
-                            current[id] = old.copy(status = "completed", updatedAt = System.currentTimeMillis())
-                            repository.buildNextOccurrence(old)?.let { next ->
-                                touchedTaskIds += next.id
-                                database.taskDao().insertTask(next)
-                                current[next.id] = next
-                            }
-                        }
-                        VoiceActionType.DELETE -> {
-                            val id = action.targetTaskId ?: error("Missing task target.")
-                            val task = current[id] ?: error("The selected target task no longer exists.")
-                            touchedTaskIds += id
-                            database.taskDao().deleteTaskAndSubtasks(task)
-                            current.remove(id)
-                        }
-                        VoiceActionType.NONE -> Unit
-                    }
-                }
-            }
-
-            val reminderErrors = mutableListOf<String>()
-            for (id in touchedTaskIds) {
-                val task = runCatching { database.taskDao().getTaskById(id) }.getOrNull()
-                runCatching { repository.synchronizeReminder(id, task) }
-                    .onFailure { reminderErrors += "Reminder for ‘${task?.title ?: "task"}’ could not be scheduled." }
-                repository.synchronizeCalendar(task, tasksBeforeBatch[id])?.let(reminderErrors::add)
-            }
-            repository.refreshTaskWidget()
-            return reminderErrors
-        } catch (error: Throwable) {
-            val restored = runCatching { database.taskDao().getAllTasksOnce().associateBy { it.id } }.getOrDefault(emptyMap())
-            for (id in touchedTaskIds) {
-                runCatching { repository.synchronizeReminder(id, restored[id]) }
-            }
-            throw error
-        } finally {
-            isApplyingVoiceBatch = false
-        }
-    }
 
     fun createProject(name: String, description: String? = null, deadlineDate: String? = null) {
         if (name.isBlank()) return

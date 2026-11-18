@@ -1,20 +1,28 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     id("org.jetbrains.kotlin.plugin.compose")
+    alias(libs.plugins.kotlinSerialization)
     id("com.google.devtools.ksp")
+}
+
+val localTaskSyncProperties = Properties().apply {
+    rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+}
+val debugBackendToken = localTaskSyncProperties.getProperty("tasksync.backendToken", "").trim()
+val productionBackendUrl = providers.gradleProperty("tasksync.productionBackendUrl").orNull
+    ?: System.getenv("TASKSYNC_PRODUCTION_BACKEND_URL")
+    ?: localTaskSyncProperties.getProperty("tasksync.productionBackendUrl", "")
+val escapedProductionBackendUrl = productionBackendUrl.replace("\\", "\\\\").replace("\"", "\\\"")
+val escapedDebugBackendToken = debugBackendToken.replace("\\", "\\\\").replace("\"", "\\\"")
+if (productionBackendUrl.isNotBlank() && !productionBackendUrl.startsWith("https://", ignoreCase = true)) {
+    throw GradleException("tasksync.productionBackendUrl must use HTTPS")
 }
 
 android {
     namespace = "com.example.tasksync"
     compileSdk = 35
-    ndkVersion = "30.0.16248370"
-
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "4.1.2"
-        }
-    }
 
     defaultConfig {
         applicationId = "com.example.tasksync"
@@ -24,18 +32,17 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-
-        externalNativeBuild {
-            cmake {
-                arguments += listOf("-DANDROID_STL=c++_shared")
-                targets += listOf("tasksync_sentencepiece")
-            }
-        }
     }
 
     buildTypes {
+        debug {
+            buildConfigField("String", "INTERPRETATION_BASE_URL", "\"http://10.42.138.1:8000/\"")
+            buildConfigField("String", "BACKEND_AUTH_TOKEN", "\"$escapedDebugBackendToken\"")
+        }
         release {
             isMinifyEnabled = false
+            buildConfigField("String", "INTERPRETATION_BASE_URL", "\"$escapedProductionBackendUrl\"")
+            buildConfigField("String", "BACKEND_AUTH_TOKEN", "\"\"")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -50,11 +57,6 @@ android {
         compose = true
         buildConfig = true
     }
-
-    androidResources {
-        noCompress += listOf("onnx", "model")
-    }
-
 }
 
 dependencies {
@@ -81,8 +83,8 @@ dependencies {
     ksp(libs.androidx.room.compiler)
 
     implementation(libs.kotlinx.coroutines.android)
-    implementation(libs.onnxruntime.android)
-
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.okhttp)
     // Testing
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

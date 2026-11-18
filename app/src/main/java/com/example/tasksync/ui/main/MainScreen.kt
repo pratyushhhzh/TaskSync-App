@@ -19,35 +19,36 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import com.example.tasksync.ui.assistant.VoiceTaskAssistantDialog
+import com.example.tasksync.ui.interpretation.InterpretationReviewDialog
+import com.example.tasksync.ui.interpretation.ProposalApprovalDialog
+import com.example.tasksync.data.remote.InterpretationResponse
 import com.example.tasksync.ui.navigation.AppNavigation
 import com.example.tasksync.ui.navigation.Screen
-import com.example.tasksync.ui.tasks.TaskListViewModel
 
 @Composable
 fun MainScreen(openVoiceAssistantSignal: Int = 0) {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route ?: Screen.Tasks.route
-    val taskViewModel: TaskListViewModel = viewModel()
-    var showVoiceAssistant by remember { mutableStateOf(false) }
-    androidx.compose.runtime.LaunchedEffect(openVoiceAssistantSignal) {
-        if (openVoiceAssistantSignal > 0) showVoiceAssistant = true
-    }
     val screens = Screen.bottomNavScreens
+    var showVoiceAssistant by remember { mutableStateOf(false) }
+    var confirmedTranscript by remember { mutableStateOf<String?>(null) }
+    var proposalResponse by remember { mutableStateOf<InterpretationResponse?>(null) }
+    var proposalTranscript by remember { mutableStateOf("") }
+    LaunchedEffect(openVoiceAssistantSignal) { if (openVoiceAssistantSignal > 0) showVoiceAssistant = true }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -112,11 +113,28 @@ fun MainScreen(openVoiceAssistantSignal: Int = 0) {
     ) { innerPadding ->
         AppNavigation(navController = navController, modifier = Modifier.padding(innerPadding))
     }
-
-    if (showVoiceAssistant) {
-        VoiceTaskAssistantDialog(
-            onDismiss = { showVoiceAssistant = false },
-            viewModel = taskViewModel
+    if (showVoiceAssistant) VoiceTaskAssistantDialog(
+        onDismiss = { showVoiceAssistant = false },
+        onTranscriptConfirmed = { transcript ->
+            confirmedTranscript = transcript
+            showVoiceAssistant = false
+        }
+    )
+    confirmedTranscript?.let { transcript ->
+        InterpretationReviewDialog(
+            transcript = transcript,
+            onDismiss = { confirmedTranscript = null },
+            onReviewProposals = { response ->
+                proposalResponse = response
+                proposalTranscript = transcript
+            },
+        )
+    }
+    proposalResponse?.let { response ->
+        ProposalApprovalDialog(
+            response = response,
+            transcript = proposalTranscript,
+            onDismiss = { proposalResponse = null; proposalTranscript = "" },
         )
     }
 }
