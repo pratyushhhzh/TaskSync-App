@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
 Transcript = Annotated[str, StringConstraints(min_length=1, max_length=5000)]
 OperationId = Annotated[str, StringConstraints(pattern=r"^op-[A-Za-z0-9_-]{1,64}$")]
+Priority = Literal["HIGH", "MEDIUM", "LOW"]
 
 
 class StrictModel(BaseModel):
@@ -17,7 +18,7 @@ class StrictModel(BaseModel):
 
 
 class InterpretationRequest(StrictModel):
-    schema_version: Literal["1"]
+    schema_version: Literal["1", "2"]
     request_id: Annotated[str, StringConstraints(min_length=1, max_length=100)]
     transcript: Transcript
     locale_hint: Annotated[str, StringConstraints(min_length=2, max_length=35)] | None = None
@@ -59,6 +60,8 @@ class AddOperation(OperationBase):
     description: Annotated[str, StringConstraints(max_length=2000)] | None = None
     date_phrase: Annotated[str, StringConstraints(max_length=200)] | None = None
     time_phrase: Annotated[str, StringConstraints(max_length=100)] | None = None
+    priority: Priority | None = None
+    reminder_requested: bool = False
 
 
 class UpdateChanges(StrictModel):
@@ -67,6 +70,7 @@ class UpdateChanges(StrictModel):
     description: Annotated[str, StringConstraints(max_length=2000)] | None = None
     date_phrase: Annotated[str, StringConstraints(max_length=200)] | None = None
     time_phrase: Annotated[str, StringConstraints(max_length=100)] | None = None
+    priority: Priority | None = None
 
     @model_validator(mode="after")
     def require_change(self) -> "UpdateChanges":
@@ -108,12 +112,13 @@ class UnsupportedItem(StrictModel):
 
 
 class InterpretationResponse(StrictModel):
-    schema_version: Literal["1"]
+    schema_version: Literal["1", "2"]
     request_id: Annotated[str, StringConstraints(min_length=1, max_length=100)]
     status: Literal["proposals", "needs_clarification", "unsupported", "partial"]
-    operations: list[Operation] = Field(default_factory=list, max_length=20)
-    clarifications: list[Clarification] = Field(default_factory=list, max_length=20)
-    unsupported_items: list[UnsupportedItem] = Field(default_factory=list, max_length=20)
+    # Keep arrays bounded by the request/output token limits, not an arbitrary task count.
+    operations: list[Operation] = Field(default_factory=list)
+    clarifications: list[Clarification] = Field(default_factory=list)
+    unsupported_items: list[UnsupportedItem] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_status_contents(self) -> "InterpretationResponse":
@@ -134,7 +139,7 @@ class InterpretationResponse(StrictModel):
 class ErrorDetail(StrictModel):
     code: Literal[
         "UNAUTHENTICATED", "INVALID_REQUEST", "RATE_LIMITED", "UPSTREAM_UNAVAILABLE",
-        "UPSTREAM_TIMEOUT", "INVALID_MODEL_RESPONSE", "INTERPRETER_NOT_CONFIGURED",
+        "UPSTREAM_TIMEOUT", "UPSTREAM_REJECTED", "INVALID_MODEL_RESPONSE", "INTERPRETER_NOT_CONFIGURED",
     ]
     message: Annotated[str, StringConstraints(min_length=1, max_length=500)]
     retryable: bool

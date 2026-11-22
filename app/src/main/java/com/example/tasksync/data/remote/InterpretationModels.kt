@@ -23,7 +23,7 @@ data class InterpretationResponse(
     @SerialName("unsupported_items") val unsupportedItems: List<UnsupportedItem>,
 ) {
     fun validateFor(requestId: String) {
-        require(schemaVersion == "1") { "The backend returned an unsupported response version." }
+        require(schemaVersion in setOf("1", "2")) { "The backend returned an unsupported response version." }
         require(this.requestId == requestId) { "The backend response did not match this request." }
         val hasOperations = operations.isNotEmpty()
         val hasClarifications = clarifications.isNotEmpty()
@@ -66,7 +66,16 @@ data class AddProposal(
     val description: String? = null,
     @SerialName("date_phrase") val datePhrase: String? = null,
     @SerialName("time_phrase") val timePhrase: String? = null,
+    val priority: TaskPriority? = null,
+    @SerialName("reminder_requested") val reminderRequested: Boolean = false,
 ) : ProposedOperation()
+
+@Serializable
+enum class TaskPriority {
+    @SerialName("HIGH") HIGH,
+    @SerialName("MEDIUM") MEDIUM,
+    @SerialName("LOW") LOW,
+}
 
 @Serializable
 @SerialName("UPDATE")
@@ -84,6 +93,7 @@ data class UpdateChanges(
     val description: String? = null,
     @SerialName("date_phrase") val datePhrase: String? = null,
     @SerialName("time_phrase") val timePhrase: String? = null,
+    val priority: TaskPriority? = null,
 )
 
 @Serializable

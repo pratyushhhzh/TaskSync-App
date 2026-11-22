@@ -56,7 +56,7 @@ fun TasksScreen(viewModel: TaskListViewModel = viewModel()) {
 
     val visibleTasks = when (selectedFilter) {
         TodayFilter.All -> allTasks
-        TodayFilter.High -> allTasks.filter { it.status != "completed" && it.priority <= 2 }
+        TodayFilter.High -> allTasks.filter { it.status != "completed" && it.priority == 1 }
         TodayFilter.Recurring -> allTasks.filter { it.status != "completed" && it.recurrenceRule != null }
         TodayFilter.Done -> allTasks.filter { it.status == "completed" }
     }
@@ -90,7 +90,7 @@ fun TasksScreen(viewModel: TaskListViewModel = viewModel()) {
                     TodayFilter.entries.forEach { filter ->
                         val count = when (filter) {
                             TodayFilter.All -> allTasks.size
-                            TodayFilter.High -> allTasks.count { it.status != "completed" && it.priority <= 2 }
+            TodayFilter.High -> allTasks.count { it.status != "completed" && it.priority == 1 }
                             TodayFilter.Recurring -> allTasks.count { it.status != "completed" && it.recurrenceRule != null }
                             TodayFilter.Done -> allTasks.count { it.status == "completed" }
                         }

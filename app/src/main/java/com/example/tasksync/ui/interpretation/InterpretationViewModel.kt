@@ -10,10 +10,10 @@ import com.example.tasksync.data.remote.InterpretationResponse
 import com.example.tasksync.data.remote.AndroidNetworkDiagnostics
 import com.example.tasksync.data.remote.deviceLocaleHint
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 sealed interface InterpretationUiState {
@@ -21,6 +21,19 @@ sealed interface InterpretationUiState {
     data class Loading(val attempt: Int) : InterpretationUiState
     data class Success(val response: InterpretationResponse, val transcript: String, val attempt: Int) : InterpretationUiState
     data class Failure(val message: String, val retryable: Boolean, val attempt: Int) : InterpretationUiState
+}
+
+internal fun InterpretationUiState.canRetryInterpretation(): Boolean =
+    this is InterpretationUiState.Failure && retryable
+
+internal class InterpretationRequestGuard {
+    private var running = false
+    @Synchronized fun begin(): Boolean {
+        if (running) return false
+        running = true
+        return true
+    }
+    @Synchronized fun finish() { running = false }
 }
 
 class InterpretationViewModel(application: android.app.Application) : AndroidViewModel(application) {
@@ -33,23 +46,35 @@ class InterpretationViewModel(application: android.app.Application) : AndroidVie
     private val _state = MutableStateFlow<InterpretationUiState>(InterpretationUiState.Idle)
     val state: StateFlow<InterpretationUiState> = _state.asStateFlow()
     private var transcript: String? = null
-    private var requestJob: Job? = null
     private var activeAttempt = 0
+    private var requestJob: Job? = null
+    private val requestGuard = InterpretationRequestGuard()
 
     fun isCurrentAttempt(attempt: Int): Boolean = attempt == activeAttempt
 
     fun interpret(confirmedTranscript: String) {
+        // Recomposition or a repeated tap during a request must not issue a second logical request.
+        if (_state.value is InterpretationUiState.Loading) return
         transcript = confirmedTranscript
         request(confirmedTranscript)
     }
 
     fun retry() {
-        transcript?.let(::request)
+        if (_state.value.canRetryInterpretation()) transcript?.let(::request)
+    }
+
+    fun cancelActiveRequest() {
+        if (_state.value !is InterpretationUiState.Loading) return
+        activeAttempt++
+        requestJob?.cancel()
+        requestJob = null
+        requestGuard.finish()
+        _state.value = InterpretationUiState.Idle
     }
 
     private fun request(text: String) {
+        if (!requestGuard.begin()) return
         val attempt = ++activeAttempt
-        requestJob?.cancel()
         _state.value = InterpretationUiState.Loading(attempt)
         requestJob = viewModelScope.launch {
             _state.value = try {
@@ -61,6 +86,8 @@ class InterpretationViewModel(application: android.app.Application) : AndroidVie
             } catch (_: Exception) {
                 InterpretationUiState.Failure("Could not interpret the transcript. Please retry.", true, attempt)
             }
+            if (attempt == activeAttempt) requestJob = null
+            requestGuard.finish()
         }
     }
 }

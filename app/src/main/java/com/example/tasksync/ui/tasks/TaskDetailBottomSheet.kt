@@ -1,5 +1,12 @@
 package com.example.tasksync.ui.tasks
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -37,8 +44,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import com.example.tasksync.data.local.entity.ProjectEntity
 import com.example.tasksync.data.local.entity.SubtaskEntity
 import com.example.tasksync.data.local.entity.TaskEntity
@@ -77,6 +87,13 @@ fun TaskDetailBottomSheet(
     var showTimePicker by remember { mutableStateOf(false) }
     var newSubtaskTitle by remember { mutableStateOf("") }
     var validationMessage by remember { mutableStateOf<String?>(null) }
+    var showNotificationSettings by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        reminderEnabled = granted
+        validationMessage = if (granted) null else "Task can still be saved, but the reminder will not be scheduled without notification permission."
+        showNotificationSettings = !granted
+    }
 
     val pickerState = rememberDatePickerState(initialSelectedDateMillis = dueDate.toEpochMillisOrNull())
     val selectedTime = runCatching { LocalTime.parse(dueTime) }.getOrNull()
@@ -144,9 +161,42 @@ fun TaskDetailBottomSheet(
                 }
                 Switch(
                     checked = reminderEnabled,
-                    onCheckedChange = { reminderEnabled = it },
+                    onCheckedChange = { requested ->
+                        if (!requested) {
+                            reminderEnabled = false
+                            validationMessage = null
+                            showNotificationSettings = false
+                        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                        ) {
+                            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        } else {
+                            val notifications = NotificationManagerCompat.from(context)
+                            val channelDisabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                                context.getSystemService(android.app.NotificationManager::class.java)
+                                    .getNotificationChannel(com.example.tasksync.data.reminder.TaskReminderScheduler.CHANNEL_ID)
+                                    ?.importance == android.app.NotificationManager.IMPORTANCE_NONE
+                            if (!notifications.areNotificationsEnabled() || channelDisabled) {
+                                reminderEnabled = false
+                                validationMessage = "Task can still be saved, but reminders are disabled in Android notification settings."
+                                showNotificationSettings = true
+                            } else {
+                                reminderEnabled = true
+                                validationMessage = null
+                                showNotificationSettings = false
+                            }
+                        }
+                    },
                     enabled = dueDate.isNotBlank() && dueTime.isNotBlank()
                 )
+            }
+            if (showNotificationSettings) {
+                TextButton(onClick = {
+                    val intent = Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                        .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                        .putExtra(Settings.EXTRA_CHANNEL_ID, com.example.tasksync.data.reminder.TaskReminderScheduler.CHANNEL_ID)
+                    context.startActivity(intent)
+                }) { Text("Open reminder notification settings") }
             }
 
             Spacer(Modifier.height(16.dp))
@@ -245,6 +295,10 @@ fun TaskDetailBottomSheet(
                         when {
                             title.isBlank() -> validationMessage = "Enter a task title."
                             reminderEnabled && (dueDate.isBlank() || dueTime.isBlank()) -> validationMessage = "Choose a deadline date and time to set a reminder."
+                            reminderEnabled && runCatching {
+                                java.time.LocalDateTime.of(LocalDate.parse(dueDate), LocalTime.parse(dueTime))
+                                    .atZone(java.time.ZoneId.systemDefault()).isBefore(java.time.ZonedDateTime.now())
+                            }.getOrDefault(false) -> validationMessage = "The reminder date and time have passed. Choose a future time or turn the reminder off."
                             recurrenceRule != "none" && dueDate.isBlank() -> validationMessage = "Choose a deadline date for a repeating task."
                             dueTime.isNotBlank() && runCatching { LocalTime.parse(dueTime) }.isFailure ->
                                 validationMessage = "Choose a valid time."

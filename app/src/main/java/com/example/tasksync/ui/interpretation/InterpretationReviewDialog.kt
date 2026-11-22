@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -37,6 +38,10 @@ fun InterpretationReviewDialog(
     viewModel: InterpretationViewModel = viewModel(),
 ) {
     val state by viewModel.state.collectAsState()
+    val dismiss = {
+        viewModel.cancelActiveRequest()
+        onDismiss()
+    }
     LaunchedEffect(transcript) { viewModel.interpret(transcript) }
     val success = (state as? InterpretationUiState.Success)?.takeIf { it.transcript == transcript }
     LaunchedEffect(success?.attempt) {
@@ -47,7 +52,7 @@ fun InterpretationReviewDialog(
     }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = dismiss,
         title = { Text("Interpretation review") },
         text = {
             Column(
@@ -55,24 +60,29 @@ fun InterpretationReviewDialog(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Text("Confirmed transcript", style = MaterialTheme.typography.titleSmall)
-                Text(transcript)
+                SelectionContainer { Text(transcript) }
                 when (val current = state) {
                     InterpretationUiState.Idle, is InterpretationUiState.Loading -> {
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             CircularProgressIndicator()
-                            Text("Requesting proposals…")
+                            val attempt = (state as? InterpretationUiState.Loading)?.attempt ?: 1
+                            Text(if (attempt > 1) "Retrying interpretation…" else "Requesting proposals…")
                         }
                     }
                     is InterpretationUiState.Failure -> {
                         Text(current.message, color = MaterialTheme.colorScheme.error)
-                        if (current.retryable) OutlinedButton(onClick = viewModel::retry) { Text("Retry") }
+                        if (current.canRetryInterpretation()) {
+                            Button(onClick = viewModel::retry, modifier = Modifier.fillMaxWidth()) { Text("Retry interpretation") }
+                        } else {
+                            Text("Your confirmed transcript is retained above. Select and copy it before closing if you need to reuse it after correcting the issue.")
+                        }
                     }
                     is InterpretationUiState.Success -> Text(if (current.transcript == transcript && viewModel.isCurrentAttempt(current.attempt)) "Preparing the proposal review…" else "Requesting proposals…")
                 }
             }
         },
         confirmButton = {
-            Button(onClick = onDismiss) { Text("Close") }
+            Button(onClick = dismiss) { Text("Close") }
         },
     )
 }

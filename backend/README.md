@@ -23,6 +23,10 @@ The backend reads `GROQ_API_KEY`, `TASKSYNC_BACKEND_TOKEN`, and optional `TASKSY
 
 `GET /health` reports service availability and whether the Groq provider is configured. `POST /v1/interpretations` validates the request, requires a configured bearer token, sends the transcript once to Groq with Strict Structured Outputs, grounds proposal fields against transcript text, and validates the result with the response models. The endpoint returns proposals only; it never accesses or executes tasks.
 
+## Safe Groq diagnostics
+
+The backend retains correlated JSONL diagnostics at `backend/logs/groq-diagnostics.jsonl`. The log rotates at 2 MB and keeps three backups. Entries include request IDs, provider attempt numbers, fixed error categories, validation stages, upstream status codes, final TaskSync HTTP/retryability classification, and only allowlisted numeric rate-limit values. Transcripts, task content, credentials, provider response bodies, and raw exception messages are excluded. Invalid or unsupported request-ID formats are omitted. This rotating file is intended for the default single-process local Uvicorn setup; use centralized structured logging if deploying multiple worker processes.
+
 ## Contract
 
 Requests contain the exact confirmed transcript, optional locale hint, an offset-aware reference timestamp, and an IANA timezone. The request schema rejects unknown fields, whitespace-only transcripts, missing timezone context, and oversized input. Transcript content is preserved as supplied.

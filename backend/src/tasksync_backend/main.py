@@ -7,15 +7,19 @@ from fastapi import FastAPI, Header, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from .diagnostics import configure_diagnostics, log_diagnostic
 from .groq_service import (
     GroqInterpreter,
     GroqRateLimited,
     GroqTimeout,
     GroqUnavailable,
+    GroqRequestRejected,
     InterpreterNotConfigured,
     ModelResponseInvalid,
 )
 from .schemas import ErrorDetail, ErrorResponse, InterpretationRequest
+
+configure_diagnostics()
 
 
 app = FastAPI(
@@ -27,6 +31,7 @@ app = FastAPI(
 
 @app.exception_handler(RequestValidationError)
 async def invalid_request_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+    log_diagnostic("task_error", category="INVALID_REQUEST", task_http_status=422, task_retryable=False)
     return JSONResponse(
         status_code=422,
         content=ErrorResponse(error=ErrorDetail(
@@ -75,12 +80,26 @@ def interpret(
         return _error(429, "RATE_LIMITED", "The interpretation service is busy. Please try again shortly.", True, request.request_id)
     except GroqUnavailable:
         return _error(503, "UPSTREAM_UNAVAILABLE", "The interpretation service is temporarily unavailable.", True, request.request_id)
+    except GroqRequestRejected:
+        return _error(502, "UPSTREAM_REJECTED", "The interpretation provider rejected the request. Please check the request and configuration.", False, request.request_id)
     except ModelResponseInvalid:
         return _error(502, "INVALID_MODEL_RESPONSE", "The interpretation service returned an unusable proposal. Please try again.", False, request.request_id)
-    return JSONResponse(status_code=200, content=response.model_dump(mode="json"))
+    payload = response.model_dump(mode="json")
+    if request.schema_version == "1":
+        # Preserve the original strict response shape for already-installed v1 clients.
+        for operation in payload["operations"]:
+            operation.pop("priority", None)
+            operation.pop("reminder_requested", None)
+            if isinstance(operation.get("changes"), dict):
+                operation["changes"].pop("priority", None)
+    return JSONResponse(status_code=200, content=payload)
 
 
 def _error(status_code: int, code: str, message: str, retryable: bool, request_id: str) -> JSONResponse:
+    log_diagnostic(
+        "task_error", request_id=request_id, category=code, task_http_status=status_code,
+        task_retryable=retryable,
+    )
     body = ErrorResponse(error=ErrorDetail(
         code=code, message=message, retryable=retryable, request_id=request_id,
     ))

@@ -125,7 +125,7 @@ fun TaskItemCard(
                 ) { Box(Modifier.size(7.dp).clip(CircleShape).background(priorityColor)) }
                 if (onPriorityChange != null) {
                     DropdownMenu(expanded = showPriorityMenu, onDismissRequest = { showPriorityMenu = false }) {
-                        listOf(1 to "Urgent", 2 to "High", 3 to "Medium", 4 to "No priority").forEach { (value, label) ->
+                        listOf(1 to "High", 2 to "Medium", 3 to "Low", 4 to "No priority").forEach { (value, label) ->
                             DropdownMenuItem(
                                 text = { Text(label) },
                                 onClick = { showPriorityMenu = false; onPriorityChange(task, value) }

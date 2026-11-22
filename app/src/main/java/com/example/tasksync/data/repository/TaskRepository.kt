@@ -10,12 +10,14 @@ import com.example.tasksync.data.calendar.GoogleDeviceCalendar
 import com.example.tasksync.widget.TaskSyncWidgetUpdater
 import android.content.Context
 import java.time.LocalDate
+import com.example.tasksync.data.reminder.ReminderScheduleStatus
 
 
 class TaskRepository(
     private val taskDao: TaskDao,
     private val appContext: Context
 ) {
+    data class TaskCreationOutcome(val task: TaskEntity, val reminderStatus: ReminderScheduleStatus)
     private val calendarTaskSync = CalendarTaskSync(appContext)
     val allTasks: Flow<List<TaskEntity>> = taskDao.getAllTasks()
     val inboxTasks: Flow<List<TaskEntity>> = taskDao.getInboxTasks()
@@ -50,30 +52,64 @@ class TaskRepository(
             status = status,
             dueDate = dueDate,
             dueTime = dueTime,
-            reminderEnabled = reminderEnabled,
+            // Mark a reminder active only after AlarmManager accepts it.
+            reminderEnabled = false,
             recurrenceRule = recurrenceRule,
             priority = priority
         )
         taskDao.insertTask(task)
-        scheduleReminder(task)
-        synchronizeCalendar(task)
+        val savedTask = scheduleReminder(task.copy(reminderEnabled = reminderEnabled))
+        synchronizeCalendar(savedTask)
         refreshTaskWidget()
-        return task
+        return savedTask
+    }
+
+    /** Voice proposal path reports reminder delivery readiness separately from task persistence. */
+    suspend fun createTaskWithReminderOutcome(
+        title: String,
+        description: String?,
+        dueDate: String?,
+        dueTime: String?,
+        reminderRequested: Boolean,
+        notificationPermissionGranted: Boolean,
+        priority: Int,
+    ): TaskCreationOutcome {
+        val task = createTask(title, description, dueDate = dueDate, dueTime = dueTime, priority = priority)
+        if (!reminderRequested) return TaskCreationOutcome(task, ReminderScheduleStatus.NOT_REQUESTED)
+        if (dueDate.isNullOrBlank() || dueTime.isNullOrBlank()) return TaskCreationOutcome(task, ReminderScheduleStatus.MISSING_DATE_TIME)
+        if (!notificationPermissionGranted) return TaskCreationOutcome(task, ReminderScheduleStatus.PERMISSION_REQUIRED)
+
+        val result = TaskReminderScheduler.schedule(
+            appContext, task.id, task.title, task.description, dueDate, dueTime,
+            enabled = true, permissionGranted = true,
+        )
+        if (result != ReminderScheduleStatus.SCHEDULED) return TaskCreationOutcome(task, result)
+        return try {
+            val currentTask = taskDao.getTaskById(task.id) ?: task
+            val reminderEnabledTask = currentTask.copy(reminderEnabled = true)
+            taskDao.updateTask(reminderEnabledTask)
+            refreshTaskWidget()
+            TaskCreationOutcome(reminderEnabledTask, ReminderScheduleStatus.SCHEDULED)
+        } catch (failure: Exception) {
+            TaskReminderScheduler.cancel(appContext, task.id)
+            TaskCreationOutcome(task, ReminderScheduleStatus.SCHEDULING_FAILED)
+        }
     }
 
     suspend fun updateTask(task: TaskEntity) {
-        val updatedTask = task.copy(updatedAt = System.currentTimeMillis())
+        val updatedTask = task.copy(updatedAt = System.currentTimeMillis(), reminderEnabled = false)
         taskDao.updateTask(updatedTask)
-        scheduleReminder(updatedTask)
-        synchronizeCalendar(updatedTask)
+        val savedTask = scheduleReminder(updatedTask.copy(reminderEnabled = task.reminderEnabled))
+        synchronizeCalendar(savedTask)
         refreshTaskWidget()
     }
 
     suspend fun restoreTask(task: TaskEntity, subtasks: List<SubtaskEntity> = emptyList()) {
-        taskDao.insertTask(task)
+        val restoredTask = task.copy(reminderEnabled = false)
+        taskDao.insertTask(restoredTask)
         for (subtask in subtasks) taskDao.insertSubtask(subtask)
-        scheduleReminder(task)
-        synchronizeCalendar(task)
+        val savedTask = scheduleReminder(restoredTask.copy(reminderEnabled = task.reminderEnabled))
+        synchronizeCalendar(savedTask)
         refreshTaskWidget()
     }
 
@@ -81,7 +117,11 @@ class TaskRepository(
         val task = taskDao.getTaskById(taskId) ?: return null
         taskDao.updateTaskStatus(taskId, "completed", System.currentTimeMillis())
         TaskReminderScheduler.cancel(appContext, taskId)
-        taskDao.getTaskById(taskId)?.let { synchronizeCalendar(it, task) }
+        taskDao.getTaskById(taskId)?.let {
+            val completed = it.copy(reminderEnabled = false)
+            if (completed != it) taskDao.updateTask(completed)
+            synchronizeCalendar(completed, task)
+        }
         val next = createNextOccurrence(task)
         refreshTaskWidget()
         return next
@@ -89,7 +129,7 @@ class TaskRepository(
 
     suspend fun reopenTask(taskId: String, newStatus: String = "inbox") {
         taskDao.updateTaskStatus(taskId, newStatus, System.currentTimeMillis())
-        taskDao.getTaskById(taskId)?.let { scheduleReminder(it); synchronizeCalendar(it) }
+        taskDao.getTaskById(taskId)?.let { synchronizeCalendar(scheduleReminder(it)) }
         refreshTaskWidget()
     }
 
@@ -100,8 +140,8 @@ class TaskRepository(
         } else {
             taskDao.updateTaskStatus(taskId, status, System.currentTimeMillis())
             taskDao.getTaskById(taskId)?.let {
-                scheduleReminder(it)
-                synchronizeCalendar(it)
+                val saved = scheduleReminder(it)
+                synchronizeCalendar(saved)
             }
             refreshTaskWidget()
         }
@@ -115,7 +155,7 @@ class TaskRepository(
         return subtasks
     }
 
-    fun synchronizeReminder(taskId: String, taskAfterTransaction: TaskEntity?) {
+    suspend fun synchronizeReminder(taskId: String, taskAfterTransaction: TaskEntity?) {
         if (taskAfterTransaction == null) TaskReminderScheduler.cancel(appContext, taskId)
         else scheduleReminder(taskAfterTransaction)
     }
@@ -161,8 +201,19 @@ class TaskRepository(
         return failures
     }
 
-    private fun scheduleReminder(task: TaskEntity) {
-        TaskReminderScheduler.schedule(appContext, task.id, task.title, task.description, task.dueDate, task.dueTime, task.reminderEnabled && task.status != "completed")
+    private suspend fun scheduleReminder(task: TaskEntity): TaskEntity {
+        val result = TaskReminderScheduler.schedule(
+            appContext,
+            task.id,
+            task.title,
+            task.description,
+            task.dueDate,
+            task.dueTime,
+            task.reminderEnabled && task.status != "completed",
+        )
+        val saved = task.copy(reminderEnabled = task.reminderEnabled && task.status != "completed" && result == ReminderScheduleStatus.SCHEDULED)
+        if (saved.reminderEnabled != task.reminderEnabled) taskDao.updateTask(saved)
+        return saved
     }
 
     fun buildNextOccurrence(task: TaskEntity): TaskEntity? {
@@ -185,6 +236,7 @@ class TaskRepository(
             id = "task_${System.currentTimeMillis()}_${(1000..9999).random()}",
             dueDate = nextDate.toString(),
             status = "inbox",
+            reminderEnabled = false,
             createdAt = System.currentTimeMillis(),
             updatedAt = System.currentTimeMillis()
         )
@@ -194,8 +246,8 @@ class TaskRepository(
     private suspend fun createNextOccurrence(task: TaskEntity): TaskEntity? =
         buildNextOccurrence(task)?.also {
             taskDao.insertTask(it)
-            scheduleReminder(it)
-            synchronizeCalendar(it)
+            val savedTask = scheduleReminder(it.copy(reminderEnabled = task.reminderEnabled))
+            synchronizeCalendar(savedTask)
             refreshTaskWidget()
         }
 }

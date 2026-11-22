@@ -6,6 +6,8 @@ import com.example.tasksync.data.remote.CompleteProposal
 import com.example.tasksync.data.remote.DeleteProposal
 import com.example.tasksync.data.remote.UpdateChanges
 import com.example.tasksync.data.remote.UpdateProposal
+import com.example.tasksync.data.remote.TaskPriority
+import com.example.tasksync.data.reminder.ReminderScheduleStatus
 import java.time.LocalDate
 import java.time.LocalTime
 import kotlinx.coroutines.runBlocking
@@ -54,6 +56,130 @@ class ProposalExecutionCoordinatorTest {
         val result = ProposalExecutionCoordinator(store).executeAfterApproval(listOf(row), setOf("op-time"))
         assertTrue(result.single().succeeded)
         assertEquals("17:00:00", store.tasks.single().dueTime)
+    }
+
+    @Test fun titleOnlyTaskWithNoOptionalMetadataIsAppliedImmediately() = runBlocking {
+        val store = FakeStore()
+        val row = ReviewProposal(AddProposal("title-only", "add a task", null, "Task title"), editedTitle = "Task title")
+        assertTrue(row.canApply)
+        val result = ProposalExecutionCoordinator(store).executeAfterApproval(listOf(row), setOf("title-only"))
+        assertTrue(result.single().succeeded)
+        assertEquals("Task title", store.tasks.single().title)
+        assertEquals(null, store.tasks.single().description)
+        assertEquals(null, store.tasks.single().dueDate)
+        assertEquals(null, store.tasks.single().dueTime)
+    }
+
+    @Test fun explicitHighPriorityIsPersistedAndUpdateWithoutPriorityPreservesExistingValue() = runBlocking {
+        val store = FakeStore().apply { tasks += TaskEntity(id = "existing", userId = "local_user", title = "Prepare lab", priority = 3) }
+        val high = ReviewProposal(
+            AddProposal("priority-add", "high priority task", null, "Prepare lab", priority = TaskPriority.HIGH),
+            editedTitle = "Prepare lab",
+        )
+        assertTrue(ProposalExecutionCoordinator(store).executeAfterApproval(listOf(high), setOf(high.executionKey)).single().succeeded)
+        assertEquals(1, store.tasks.last().priority)
+
+        val update = ReviewProposal(
+            UpdateProposal("no-priority-change", "rename task", null, "Prepare lab", UpdateChanges(title = "Prepare for lab")),
+            matchedTaskId = "existing", editedTitle = "Prepare for lab",
+        )
+        assertTrue(ProposalExecutionCoordinator(store).executeAfterApproval(listOf(update), setOf(update.executionKey)).single().succeeded)
+        assertEquals(3, store.tasks.first { it.id == "existing" }.priority)
+    }
+
+    @Test fun reminderRequestWithoutPermissionStillSavesTaskAndReportsReminderSeparately() = runBlocking {
+        val store = FakeStore()
+        val row = ReviewProposal(
+            AddProposal("reminder-op", "Remind me to call a friend", null, "Call a friend", reminderRequested = true),
+            editedTitle = "Call a friend",
+        )
+        val result = ProposalExecutionCoordinator(store).executeAfterApproval(
+            listOf(row), setOf(row.executionKey), notificationPermissionGranted = false,
+        ).single()
+        assertTrue(result.succeeded)
+        assertEquals("Call a friend", store.tasks.single().title)
+        assertTrue(result.message.contains("Reminder not scheduled"))
+        assertFalse(store.tasks.single().reminderEnabled)
+    }
+
+    @Test fun failedOperationCanBeRetriedButSuccessfulOperationCannotBeDuplicated() = runBlocking {
+        val store = FakeStore().apply { failTitle = "retry me" }
+        val coordinator = ProposalExecutionCoordinator(store)
+        val row = addRow("retry-op", "retry me")
+        assertFalse(coordinator.executeAfterApproval(listOf(row), setOf(row.executionKey)).single().succeeded)
+        store.failTitle = null
+        assertTrue(coordinator.executeAfterApproval(listOf(row), setOf(row.executionKey)).single().succeeded)
+        assertFalse(coordinator.executeAfterApproval(listOf(row), setOf(row.executionKey)).single().succeeded)
+        assertEquals(1, store.addCalls)
+    }
+
+    @Test fun timeWithoutDateIsOptionalAndKeepsDateNull() = runBlocking {
+        val store = FakeStore()
+        val row = ReviewProposal(
+            AddProposal("time-only", "call at 5 pm", null, "Call", timePhrase = "5 pm"),
+            editedTitle = "Call", dueTimeInput = "17:00",
+        )
+        assertTrue(row.canApply)
+        assertTrue(ProposalExecutionCoordinator(store).executeAfterApproval(listOf(row), setOf("time-only")).single().succeeded)
+        assertEquals(null, store.tasks.single().dueDate)
+        assertEquals("17:00:00", store.tasks.single().dueTime)
+    }
+
+    @Test fun unresolvedScheduleWarningsDoNotBlockApplyAndCanBeManuallyCorrected() = runBlocking {
+        val store = FakeStore()
+        val unresolved = ReviewProposal(
+            operation = AddProposal("uncertain-time", "Call Mom in the evening", null, "Call Mom", timePhrase = "in the evening"),
+            editedTitle = "Call Mom",
+            timeResolutionUnresolved = true,
+        )
+        assertEquals(listOf("Time could not be determined. Add it manually if needed."), unresolved.scheduleWarnings)
+        assertTrue(unresolved.canApply)
+        val result = ProposalExecutionCoordinator(store).executeAfterApproval(listOf(unresolved), setOf(unresolved.executionKey))
+        assertTrue(result.single().succeeded)
+        assertEquals(null, store.tasks.single().dueDate)
+        assertEquals(null, store.tasks.single().dueTime)
+
+        val unresolvedDate = ReviewProposal(
+            operation = AddProposal("uncertain-date", "Pay the bill sometime later", null, "Pay the bill", datePhrase = "sometime later"),
+            editedTitle = "Pay the bill",
+            dateResolutionUnresolved = true,
+        )
+        assertEquals(listOf("Date could not be determined. Add it manually if needed."), unresolvedDate.scheduleWarnings)
+        assertTrue(unresolvedDate.canApply)
+        val unresolvedDateResult = ProposalExecutionCoordinator(store).executeAfterApproval(listOf(unresolvedDate), setOf(unresolvedDate.executionKey))
+        assertTrue(unresolvedDateResult.single().succeeded)
+        assertEquals(null, store.tasks.last().dueDate)
+        assertEquals(null, store.tasks.last().dueTime)
+
+        val needsDate = unresolved.copy(
+            operation = AddProposal("manual-correction", "Finish next month", null, "Finish", datePhrase = "next month"),
+            dateResolutionUnresolved = true,
+            timeResolutionUnresolved = false,
+        )
+        assertEquals(listOf("Date could not be determined. Add it manually if needed."), needsDate.scheduleWarnings)
+        val corrected = needsDate.withDateSelection(LocalDate.of(2026, 12, 1)).withTimeSelection(LocalTime.of(17, 30))
+        assertTrue(corrected.scheduleWarnings.isEmpty())
+        assertTrue(corrected.canApply)
+        val correctedResult = ProposalExecutionCoordinator(store).executeAfterApproval(listOf(corrected), setOf(corrected.executionKey))
+        assertTrue(correctedResult.single().succeeded)
+        assertEquals("2026-12-01", store.tasks.last().dueDate)
+        assertEquals("17:30:00", store.tasks.last().dueTime)
+    }
+
+    @Test fun unresolvedUpdateDateDoesNotClearTheExistingTaskDeadline() = runBlocking {
+        val store = FakeStore().apply {
+            tasks += TaskEntity(id = "existing", userId = "local_user", title = "Pay bill", dueDate = "2026-12-02", dueTime = "09:00:00")
+        }
+        val row = ReviewProposal(
+            operation = UpdateProposal("update-uncertain-date", "move bill sometime", null, "Pay bill", UpdateChanges(datePhrase = "sometime soon")),
+            matchedTaskId = "existing",
+            dateResolutionUnresolved = true,
+        )
+        assertTrue(row.canApply)
+        val result = ProposalExecutionCoordinator(store).executeAfterApproval(listOf(row), setOf(row.executionKey))
+        assertTrue(result.single().succeeded)
+        assertEquals("2026-12-02", store.tasks.single().dueDate)
+        assertEquals("09:00:00", store.tasks.single().dueTime)
     }
 
     @Test fun updatePreservesEveryUnrequestedField() = runBlocking {
@@ -173,10 +299,26 @@ class ProposalExecutionCoordinatorTest {
 
         override suspend fun allTasks() = tasks.toList()
         override suspend fun taskById(id: String) = tasks.find { it.id == id }
-        override suspend fun add(title: String, description: String?, dueDate: String?, dueTime: String?): TaskEntity {
+        override suspend fun add(
+            title: String,
+            description: String?,
+            dueDate: String?,
+            dueTime: String?,
+            priority: Int,
+            reminderRequested: Boolean,
+            notificationPermissionGranted: Boolean,
+        ): ProposalTaskCreationResult {
             if (title == failTitle) error("simulated failure")
             addCalls++
-            return TaskEntity("new-$addCalls", "local_user", title = title, description = description, dueDate = dueDate, dueTime = dueTime).also(tasks::add)
+            val task = TaskEntity("new-$addCalls", "local_user", title = title, description = description, dueDate = dueDate, dueTime = dueTime, priority = priority).also(tasks::add)
+            val status = when {
+                !reminderRequested -> ReminderScheduleStatus.NOT_REQUESTED
+                !notificationPermissionGranted -> ReminderScheduleStatus.PERMISSION_REQUIRED
+                dueDate.isNullOrBlank() || dueTime.isNullOrBlank() -> ReminderScheduleStatus.MISSING_DATE_TIME
+                else -> ReminderScheduleStatus.SCHEDULED
+            }
+            val finalTask = if (status == ReminderScheduleStatus.SCHEDULED) task.copy(reminderEnabled = true).also { tasks[tasks.lastIndex] = it } else task
+            return ProposalTaskCreationResult(finalTask, status)
         }
         override suspend fun update(task: TaskEntity) {
             val index = tasks.indexOfFirst { it.id == task.id }

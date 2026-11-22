@@ -22,13 +22,13 @@ class InterpretationRepositoryTest {
         val transport = FakeTransport(success(response(operations = listOf(add("op-1")))))
         repository(transport).interpret(transcript, "hi-IN")
         val sent = Json.decodeFromString<InterpretationRequest>(transport.body!!)
-        assertEquals("1", sent.schemaVersion)
+        assertEquals("2", sent.schemaVersion)
         assertEquals("request-test", sent.requestId)
         assertEquals(transcript, sent.transcript)
         assertEquals("hi-IN", sent.localeHint)
         assertEquals("2026-11-18T15:45:30+05:30", sent.referenceTime)
         assertEquals("Asia/Kolkata", sent.timeZone)
-        assertEquals("http://10.42.138.1:8000/v1/interpretations", transport.url)
+        assertEquals("http://10.11.60.1:8000/v1/interpretations", transport.url)
         assertEquals("Bearer local-token", transport.authorization)
     }
 
@@ -58,6 +58,18 @@ class InterpretationRepositoryTest {
         assertEquals("next Friday", (result.operations[1] as UpdateProposal).changes.datePhrase)
     }
 
+    @Test fun explicitPriorityAndReminderIntentDeserialize() = runBlocking {
+        val proposed = AddProposal(
+            "op-add", "Remind me to call the friend", null, "call the friend",
+            datePhrase = "tomorrow", timePhrase = "10 AM", priority = TaskPriority.HIGH, reminderRequested = true,
+        )
+        val result = repository(FakeTransport(success(response(operations = listOf(proposed)))))
+            .interpret("Remind me to call the friend tomorrow at 10 AM", "en-IN")
+        val add = result.operations.single() as AddProposal
+        assertEquals(TaskPriority.HIGH, add.priority)
+        assertTrue(add.reminderRequested)
+    }
+
     @Test fun clarificationsAndPartialInterpretationArePreserved() = runBlocking {
         val partial = response(
             status = InterpretationStatus.PARTIAL,
@@ -74,10 +86,27 @@ class InterpretationRepositoryTest {
 
     @Test fun backendErrorEnvelopeIsPresentedWithoutLosingRetryability() = runBlocking {
         val errorBody = """{"error":{"code":"UPSTREAM_TIMEOUT","message":"timed out","retryable":true,"request_id":"request-test"}}"""
-        val error = runCatching { repository(FakeTransport(HttpResult(504, errorBody))).interpret("text", null) }.exceptionOrNull()
+        val log = mutableListOf<String>()
+        val error = runCatching {
+            repository(FakeTransport(HttpResult(504, errorBody)), debugLog = log::add).interpret("text", null)
+        }.exceptionOrNull()
         assertTrue(error is InterpretationException)
         assertTrue((error as InterpretationException).retryable)
         assertTrue(error.message!!.contains("timed out", ignoreCase = true))
+        assertTrue(log.contains("Interpretation HTTP status=504"))
+        assertTrue(log.contains("Interpretation backend error code=UPSTREAM_TIMEOUT"))
+        assertFalse(log.joinToString("\n").contains("timed out"))
+    }
+
+    @Test fun providerRequestRejectionUsesMeaningfulNonRetryableMessage() = runBlocking {
+        val errorBody = """{"error":{"code":"UPSTREAM_REJECTED","message":"provider rejected","retryable":false,"request_id":"request-test"}}"""
+        val error = runCatching {
+            repository(FakeTransport(HttpResult(502, errorBody))).interpret("exact transcript", null)
+        }.exceptionOrNull()
+        assertTrue(error is InterpretationException)
+        assertEquals("UPSTREAM_REJECTED", (error as InterpretationException).code)
+        assertFalse(error.retryable)
+        assertTrue(error.message!!.contains("provider rejected this request"))
     }
 
     @Test fun emptyResponseIsAReadableFailure() = runBlocking {
@@ -101,7 +130,7 @@ class InterpretationRepositoryTest {
         val transcript = "private voice transcript"
         val token = "sensitive-local-token"
         val repository = InterpretationRepository(
-            baseUrl = "http://10.42.138.1:8000/",
+            baseUrl = "http://10.11.60.1:8000/",
             backendToken = token,
             transport = FakeTransport(success(response(operations = listOf(add("op-1"))))),
             clock = clock,
@@ -111,7 +140,7 @@ class InterpretationRepositoryTest {
         )
         repository.interpret(transcript, "en-IN")
         val combined = log.joinToString("\n")
-        assertTrue(combined.contains("10.42.138.1"))
+        assertTrue(combined.contains("10.11.60.1"))
         assertTrue(combined.contains("wifi"))
         assertTrue(combined.contains("HTTP status=200"))
         assertFalse(combined.contains(transcript))
@@ -125,12 +154,37 @@ class InterpretationRepositoryTest {
         assertFalse((error as InterpretationException).retryable)
     }
 
-    private fun repository(transport: InterpretationTransport) = InterpretationRepository(
-        baseUrl = "http://10.42.138.1:8000/",
+    @Test fun retryCanResendTheExactConfirmedTranscriptAndSucceedAfterFailure() = runBlocking {
+        val transcript = "  Remind me to call the dentist tomorrow.  "
+        val transport = SequenceTransport(
+            HttpResult(200, "{malformed"),
+            success(response(operations = listOf(add("op-retry")))),
+        )
+        val repository = repository(transport)
+        val first = runCatching { repository.interpret(transcript, "en-IN") }.exceptionOrNull()
+        assertTrue(first is InterpretationException)
+        val result = repository.interpret(transcript, "en-IN")
+        assertEquals(listOf(transcript, transcript), transport.transcripts)
+        assertEquals("op-retry", result.operations.single().operationId)
+    }
+
+    @Test fun consecutiveInterpretationFailuresKeepRetryAvailableForSameTranscript() = runBlocking {
+        val transcript = "keep this exact transcript"
+        val transport = SequenceTransport(HttpResult(200, ""), HttpResult(503, ""), success(response(operations = listOf(add("op-later")))))
+        val repository = repository(transport)
+        repeat(2) { assertTrue(runCatching { repository.interpret(transcript, "en-IN") }.exceptionOrNull() is InterpretationException) }
+        assertEquals(listOf(transcript, transcript), transport.transcripts)
+        assertEquals("op-later", repository.interpret(transcript, "en-IN").operations.single().operationId)
+        assertEquals(listOf(transcript, transcript, transcript), transport.transcripts)
+    }
+
+    private fun repository(transport: InterpretationTransport, debugLog: ((String) -> Unit)? = null) = InterpretationRepository(
+        baseUrl = "http://10.11.60.1:8000/",
         backendToken = "local-token",
         transport = transport,
         clock = clock,
         requestId = { "request-test" },
+        debugLog = debugLog,
     )
 
     private fun success(value: InterpretationResponse) = HttpResult(200, interpretationJson.encodeToString(value))
@@ -154,6 +208,15 @@ class InterpretationRepositoryTest {
             this.authorization = authorization
             this.body = body
             return result
+        }
+    }
+
+    private class SequenceTransport(vararg results: HttpResult) : InterpretationTransport {
+        private val remaining = ArrayDeque(results.toList())
+        val transcripts = mutableListOf<String>()
+        override suspend fun post(url: String, authorization: String, body: String): HttpResult {
+            transcripts += Json.decodeFromString<InterpretationRequest>(body).transcript
+            return remaining.removeFirst()
         }
     }
 }

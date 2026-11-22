@@ -6,6 +6,8 @@ import com.example.tasksync.data.remote.CompleteProposal
 import com.example.tasksync.data.remote.DeleteProposal
 import com.example.tasksync.data.remote.ProposedOperation
 import com.example.tasksync.data.remote.UpdateProposal
+import com.example.tasksync.data.remote.TaskPriority
+import com.example.tasksync.data.reminder.ReminderScheduleStatus
 import java.util.concurrent.ConcurrentHashMap
 import java.time.LocalTime
 import java.time.LocalDate
@@ -15,11 +17,16 @@ import kotlinx.coroutines.CancellationException
 interface ProposalTaskStore {
     suspend fun allTasks(): List<TaskEntity>
     suspend fun taskById(id: String): TaskEntity?
-    suspend fun add(title: String, description: String?, dueDate: String?, dueTime: String?): TaskEntity
+    suspend fun add(
+        title: String, description: String?, dueDate: String?, dueTime: String?, priority: Int,
+        reminderRequested: Boolean, notificationPermissionGranted: Boolean,
+    ): ProposalTaskCreationResult
     suspend fun update(task: TaskEntity)
     suspend fun complete(id: String): Boolean
     suspend fun delete(task: TaskEntity)
 }
+
+data class ProposalTaskCreationResult(val task: TaskEntity, val reminderStatus: ReminderScheduleStatus)
 
 data class ReviewProposal(
     val operation: ProposedOperation,
@@ -35,6 +42,15 @@ data class ReviewProposal(
     val dueTimeInput: String = "",
     val dateClearedByUser: Boolean = false,
     val timeClearedByUser: Boolean = false,
+    val selectedPriority: Int? = when (val proposal = operation) {
+        is AddProposal -> proposal.priority?.toTaskPriority() ?: 4
+        is UpdateProposal -> proposal.changes.priority?.toTaskPriority()
+        else -> null
+    },
+    val inferredDeadline: Boolean = false,
+    val dateResolutionUnresolved: Boolean = false,
+    val timeResolutionUnresolved: Boolean = false,
+    val reminderRequested: Boolean = (operation as? AddProposal)?.reminderRequested == true,
     val matchedTaskId: String? = null,
     val matches: List<TaskMatch> = emptyList(),
     val matchQuality: MatchQuality? = null,
@@ -42,6 +58,15 @@ data class ReviewProposal(
     val outcome: OperationOutcome? = null,
 ) {
     val operationId: String get() = operation.operationId
+    val scheduleWarnings: List<String>
+        get() = buildList {
+            if (dateResolutionUnresolved && !dateClearedByUser && dueDateInput.isBlank()) {
+                add("Date could not be determined. Add it manually if needed.")
+            }
+            if (timeResolutionUnresolved && !timeClearedByUser && dueTimeInput.isBlank()) {
+                add("Time could not be determined. Add it manually if needed.")
+            }
+        }
     fun withDateSelection(value: LocalDate?): ReviewProposal = copy(
         dueDateInput = value?.toString().orEmpty(),
         dateClearedByUser = value == null,
@@ -58,18 +83,15 @@ data class ReviewProposal(
         }
 
     private fun validDates(): Boolean {
-        val phrases = operation.dateAndTimePhrases()
-        val hasDatePhrase = phrases.first != null || phrases.second.impliesDate()
-        val hasTimePhrase = phrases.second != null || phrases.first.requiresExactTime()
-        val dateOkay = dateClearedByUser || !hasDatePhrase || runCatching { java.time.LocalDate.parse(dueDateInput) }.isSuccess
-        val timeOkay = timeClearedByUser || !hasTimePhrase || runCatching { java.time.LocalTime.parse(dueTimeInput) }.isSuccess
+        val dateOkay = dueDateInput.isBlank() || runCatching { LocalDate.parse(dueDateInput) }.isSuccess
+        val timeOkay = dueTimeInput.isBlank() || runCatching { LocalTime.parse(dueTimeInput) }.isSuccess
         return dateOkay && timeOkay
     }
 
     private fun hasRequestedChanges(): Boolean {
         val update = operation as? UpdateProposal ?: return true
         return update.changes.title != null || update.changes.description != null ||
-            update.changes.datePhrase != null || update.changes.timePhrase != null
+            update.changes.datePhrase != null || update.changes.timePhrase != null || selectedPriority != null
     }
 }
 
@@ -77,6 +99,12 @@ internal fun ProposedOperation.dateAndTimePhrases(): Pair<String?, String?> = wh
     is AddProposal -> datePhrase to timePhrase
     is UpdateProposal -> changes.datePhrase to changes.timePhrase
     else -> null to null
+}
+
+private fun TaskPriority.toTaskPriority(): Int = when (this) {
+    TaskPriority.HIGH -> 1
+    TaskPriority.MEDIUM -> 2
+    TaskPriority.LOW -> 3
 }
 
 internal fun String?.requiresExactTime(): Boolean = this?.let {
@@ -92,32 +120,54 @@ data class OperationOutcome(val operationId: String, val succeeded: Boolean, val
 
 /** Executes only operation IDs passed after the user's final approval. Attempted IDs are never replayed. */
 class ProposalExecutionCoordinator(private val store: ProposalTaskStore) {
-    private val attempted = ConcurrentHashMap.newKeySet<String>()
+    private val inFlight = ConcurrentHashMap.newKeySet<String>()
+    private val completed = ConcurrentHashMap.newKeySet<String>()
 
-    suspend fun executeAfterApproval(rows: List<ReviewProposal>, approvedIds: Set<String>): List<OperationOutcome> {
+    suspend fun executeAfterApproval(
+        rows: List<ReviewProposal>,
+        approvedIds: Set<String>,
+        notificationPermissionGranted: Boolean = true,
+    ): List<OperationOutcome> {
         val selected = rows.filter { it.executionKey in approvedIds }
         if (selected.map { it.executionKey }.distinct().size != selected.size) return emptyList()
         return selected.map { row ->
             when {
                 !row.canApply -> OperationOutcome(row.executionKey, false, "Needs a target or valid date/time before it can be applied.")
-                !attempted.add(row.executionKey) -> OperationOutcome(row.executionKey, false, "This proposal was already attempted; it was not repeated.")
+                row.executionKey in completed -> OperationOutcome(row.executionKey, false, "This proposal was already applied; it was not repeated.")
+                !inFlight.add(row.executionKey) -> OperationOutcome(row.executionKey, false, "This proposal is already being applied.")
                 else -> try {
-                    OperationOutcome(row.executionKey, true, apply(row))
+                    val message = apply(row, notificationPermissionGranted)
+                    completed.add(row.executionKey)
+                    OperationOutcome(row.executionKey, true, message)
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (failure: Exception) {
                     OperationOutcome(row.executionKey, false, failure.message ?: "The operation failed.")
+                } finally {
+                    inFlight.remove(row.executionKey)
                 }
             }
         }
     }
 
-    private suspend fun apply(row: ReviewProposal): String = when (val proposal = row.operation) {
+    private suspend fun apply(row: ReviewProposal, notificationPermissionGranted: Boolean): String = when (val proposal = row.operation) {
         is AddProposal -> {
             val date = row.dueDateInput.takeIf(String::isNotBlank)
             val time = row.dueTimeInput.takeIf(String::isNotBlank)?.toTaskTime()
-            store.add(row.editedTitle, row.editedDescription.ifBlank { null }, date, time)
-            "Task added."
+            val created = store.add(
+                row.editedTitle, row.editedDescription.ifBlank { null }, date, time, row.selectedPriority ?: 4,
+                row.reminderRequested, notificationPermissionGranted,
+            )
+            when (created.reminderStatus) {
+                ReminderScheduleStatus.NOT_REQUESTED -> "Task added."
+                ReminderScheduleStatus.SCHEDULED -> "Task added. Reminder scheduled; Android may deliver it shortly after the selected time."
+                ReminderScheduleStatus.MISSING_DATE_TIME -> "Task added. Reminder not scheduled because a date and time are required."
+                ReminderScheduleStatus.PERMISSION_REQUIRED -> "Task added. Reminder not scheduled because notification permission is required."
+                ReminderScheduleStatus.APP_NOTIFICATIONS_DISABLED -> "Task added. Reminder not scheduled because app notifications are disabled."
+                ReminderScheduleStatus.CHANNEL_DISABLED -> "Task added. Reminder not scheduled because the Task reminders channel is disabled."
+                ReminderScheduleStatus.PAST_TIME -> "Task added. Reminder not scheduled because the selected time has passed."
+                ReminderScheduleStatus.SCHEDULING_FAILED -> "Task added, but Android could not schedule the reminder."
+            }
         }
         is UpdateProposal -> {
             val taskId = row.matchedTaskId ?: error("Choose a task first.")
@@ -126,8 +176,17 @@ class ProposalExecutionCoordinator(private val store: ProposalTaskStore) {
             store.update(task.copy(
                 title = if (changes.title != null) row.editedTitle else task.title,
                 description = if (changes.description != null) row.editedDescription.ifBlank { null } else task.description,
-                dueDate = if (changes.datePhrase != null || changes.timePhrase.impliesDate()) row.dueDateInput.takeIf(String::isNotBlank) else task.dueDate,
-                dueTime = if (changes.timePhrase != null || changes.datePhrase.requiresExactTime()) row.dueTimeInput.takeIf(String::isNotBlank)?.toTaskTime() else task.dueTime,
+                dueDate = when {
+                    row.dateClearedByUser -> null
+                    row.dueDateInput.isNotBlank() -> row.dueDateInput
+                    else -> task.dueDate
+                },
+                dueTime = when {
+                    row.timeClearedByUser -> null
+                    row.dueTimeInput.isNotBlank() -> row.dueTimeInput.toTaskTime()
+                    else -> task.dueTime
+                },
+                priority = row.selectedPriority ?: task.priority,
             ))
             "Task updated."
         }

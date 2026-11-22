@@ -35,6 +35,43 @@ class LocalDateTimeResolverTest {
         assertFalse(broad.isResolved)
     }
 
+    @Test fun unresolvedEveningTimeDoesNotInventAnExactTimeOrDate() {
+        val result = resolver.resolve("in the evening", null)
+        assertEquals(null, result.date)
+        assertEquals(null, result.time)
+        assertFalse(result.dateUnresolved)
+        assertTrue(result.timeUnresolved)
+
+        val timeFieldResult = resolver.resolve(null, "in the evening")
+        assertEquals(null, timeFieldResult.date)
+        assertEquals(null, timeFieldResult.time)
+        assertFalse(timeFieldResult.dateUnresolved)
+        assertTrue(timeFieldResult.timeUnresolved)
+    }
+
+    @Test fun tonightResolvesTodayButLeavesItsUnspecifiedTimeUnset() {
+        val result = resolver.resolve("tonight", null)
+        assertEquals("2026-11-18", result.date.toString())
+        assertEquals(null, result.time)
+        assertFalse(result.dateUnresolved)
+        assertTrue(result.timeUnresolved)
+    }
+
+    @Test fun unknownDateIsSeparatelyMarkedUnresolved() {
+        val result = resolver.resolve("sometime after the next milestone", null)
+        assertEquals(null, result.date)
+        assertTrue(result.dateUnresolved)
+        assertFalse(result.timeUnresolved)
+    }
+
+    @Test fun resolvedDateSurvivesAnUnresolvedTimePhrase() {
+        val result = resolver.resolve("next Friday", "in the evening")
+        assertEquals("2026-11-20", result.date.toString())
+        assertEquals(null, result.time)
+        assertFalse(result.dateUnresolved)
+        assertTrue(result.timeUnresolved)
+    }
+
     @Test fun dateAndTimeMayArriveTogetherInOnePhrase() {
         val result = resolver.resolve("tomorrow at 5 PM", null)
         assertEquals("2026-11-19", result.date.toString())
@@ -51,6 +88,16 @@ class LocalDateTimeResolverTest {
     @Test fun localizedNextWeekdayUsesDeviceLocale() {
         val hindiResolver = LocalDateTimeResolver(clock, Locale.forLanguageTag("hi-IN"))
         assertEquals("2026-11-20", hindiResolver.resolve("अगला शुक्रवार", null).date.toString())
+    }
+
+    @Test fun nextWeekMondaySpokenVariantsUseLocaleCalendarWeek() {
+        val expected = "2026-11-23"
+        val thursday = LocalDateTimeResolver(Clock.fixed(Instant.parse("2026-11-19T10:15:00Z"), zone), Locale.forLanguageTag("en-IN"))
+        listOf("next week's Monday", "next weeks Monday", "Monday next week", "Monday of next week")
+            .forEach { phrase -> assertEquals(phrase, expected, thursday.resolve(phrase, null).date.toString()) }
+        assertEquals("2026-11-25", thursday.resolve("Next week Wednesday", null).date.toString())
+        assertEquals("2026-11-20", thursday.resolve("This Friday", null).date.toString())
+        assertEquals("2026-11-23", thursday.resolve("Next Monday", null).date.toString())
     }
 
     @Test fun ambiguousHindiKalIsNeverGuessed() {
@@ -89,8 +136,22 @@ class LocalDateTimeResolverTest {
         val sunday = Clock.fixed(Instant.parse("2026-11-22T04:00:00Z"), zone)
         assertEquals("2026-11-30", LocalDateTimeResolver(sunday, Locale.US).resolve("Monday next week", null).date.toString())
         assertEquals("2026-11-23", LocalDateTimeResolver(sunday, Locale.UK).resolve("Monday next week", null).date.toString())
-        assertFalse(resolver.resolve("this week", null).isResolved)
+        val enInResolver = LocalDateTimeResolver(clock, Locale.forLanguageTag("en-IN"))
+        val inferredWeek = enInResolver.resolve("this week", null)
+        assertEquals("2026-11-22", inferredWeek.date.toString())
+        assertTrue(inferredWeek.dateWasInferred)
+        assertTrue(inferredWeek.isResolved)
         assertFalse(resolver.resolve("next week", null).isResolved)
+    }
+
+    @Test fun bareWeekdayUsesNearestOccurrenceIncludingTodayAndHonorsPastTime() {
+        val saturday = LocalDateTimeResolver(Clock.fixed(Instant.parse("2026-11-21T06:00:00Z"), zone), Locale.forLanguageTag("en-IN"))
+        assertEquals("2026-11-23", saturday.resolve("on Monday", null).date.toString())
+        assertEquals("2026-11-23", saturday.resolve("Monday next week", null).date.toString())
+        val mondayMorning = LocalDateTimeResolver(Clock.fixed(Instant.parse("2026-11-23T04:00:00Z"), zone), Locale.forLanguageTag("en-IN"))
+        assertEquals("2026-11-23", mondayMorning.resolve("Monday", null).date.toString())
+        assertEquals("2026-11-30", mondayMorning.resolve("Monday", "9 AM").date.toString())
+        assertEquals("2026-11-30", mondayMorning.resolve("Next Monday", null).date.toString())
     }
 
     @Test fun everyWeekdaySupportsThisNextAndFollowingCalendarWeekForms() {
@@ -116,12 +177,47 @@ class LocalDateTimeResolverTest {
     @Test fun monthAndUnambiguousNumericDatesHandleYearBoundaries() {
         assertEquals("2026-11-23", resolver.resolve("23 November", null).date.toString())
         assertEquals("2026-12-31", resolver.resolve("31 Dec", null).date.toString())
-        assertEquals("2027-01-01", resolver.resolve("1 January", null).date.toString())
+        val januaryDate = resolver.resolve("1 January", null)
+        assertEquals("2026-01-01", januaryDate.date.toString())
+        assertFalse(januaryDate.isResolved)
         assertEquals("2026-11-23", resolver.resolve("23/11/2026", null).date.toString())
         assertEquals("2026-11-23", resolver.resolve("11/23/2026", null).date.toString())
         assertEquals("2026-11-23", resolver.resolve("2026/11/23", null).date.toString())
         assertFalse(resolver.resolve("03/04/2026", null).isResolved)
         assertFalse(resolver.resolve("2025-11-23", null).isResolved)
+    }
+
+    @Test fun spokenExplicitCalendarDatesDoNotSilentlyMovePastDatesToNextYear() {
+        val pastMonthDate = resolver.resolve("November 3rd", null)
+        assertEquals("2026-11-03", pastMonthDate.date.toString())
+        assertFalse(pastMonthDate.isResolved)
+        assertFalse(resolver.resolve("3rd November 2026", null).isResolved) // supplied date is in the past
+        assertEquals("2026-01-01", resolver.resolve("January 1st", null).date.toString())
+        assertEquals("2026-11-23", resolver.resolve("November 23, 2026", null).date.toString())
+        assertEquals("2026-11-23", resolver.resolve("23/11/2026", null).date.toString())
+        assertFalse(resolver.resolve("03/04/2026", null).isResolved)
+    }
+
+    @Test fun ordinalWeekdaysResolveStrictlyAcrossMonthsAndYears() {
+        assertEquals("2026-11-18", resolver.resolve("November's third Wednesday", null).date.toString())
+        assertEquals("2026-11-18", resolver.resolve("Third Wednesday of November", null).date.toString())
+        assertEquals("2026-12-16", resolver.resolve("Third Wednesday of next month", null).date.toString())
+        val yearEnd = LocalDateTimeResolver(Clock.fixed(Instant.parse("2026-12-31T06:00:00Z"), zone), Locale.forLanguageTag("en-IN"))
+        assertEquals("2027-01-20", yearEnd.resolve("Third Wednesday of next month", null).date.toString())
+        val afterNovemberOrdinal = LocalDateTimeResolver(Clock.fixed(Instant.parse("2026-11-19T04:45:00Z"), zone), Locale.forLanguageTag("en-IN"))
+            .resolve("Third Wednesday of November", null)
+        assertEquals("2026-11-18", afterNovemberOrdinal.date.toString())
+        assertFalse(afterNovemberOrdinal.isResolved)
+        assertFalse(resolver.resolve("November's eighth Wednesday", null).isResolved)
+    }
+
+    @Test fun relativeDateExpressionsUseInjectedLocalDate() {
+        val onNov19 = LocalDateTimeResolver(Clock.fixed(Instant.parse("2026-11-19T10:15:00Z"), zone), Locale.forLanguageTag("en-IN"))
+        assertEquals("2026-11-19", onNov19.resolve("Today", null).date.toString())
+        assertEquals("2026-11-20", onNov19.resolve("Tomorrow", null).date.toString())
+        assertEquals("2026-11-21", onNov19.resolve("Day after tomorrow", null).date.toString())
+        assertEquals(null, onNov19.resolve(null, null).date)
+        assertTrue(onNov19.resolve(null, null).isResolved)
     }
 
     @Test fun supportsCommonTwelveAndTwentyFourHourTimes() {

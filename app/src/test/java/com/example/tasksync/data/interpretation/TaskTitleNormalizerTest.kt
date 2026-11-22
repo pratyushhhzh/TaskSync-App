@@ -41,4 +41,9 @@ class TaskTitleNormalizerTest {
         )
         assertEquals(listOf("submit a PPT", "Finish Java assignment"), titles)
     }
+
+    @Test fun removesReminderAndTaskCreationFraming() {
+        assertEquals("call my friend", TaskTitleNormalizer.normalize("Remind me to call my friend tomorrow", "Remind me to call my friend tomorrow", "tomorrow", null))
+        assertEquals("revise object oriented programming", TaskTitleNormalizer.normalize("Add a task to revise object oriented programming", "Add a task to revise object oriented programming", null, null))
+    }
 }

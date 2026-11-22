@@ -10,8 +10,10 @@ object TaskTitleNormalizer {
 
         val sourceHaveIsFraming = Regex("^\\s*i\\s+have\\s+(?:to|a|an|the)\\b", RegexOption.IGNORE_CASE).containsMatchIn(sourceText)
         val actionFiller = Regex("^\\s*(?:i\\s+)?(?:need\\s+to|have\\s+to)\\s+", RegexOption.IGNORE_CASE)
+        val requestFiller = Regex("^\\s*(?:please\\s+)?(?:remind\\s+me\\s+to|add\\s+(?:a\\s+)?task\\s+to|create\\s+(?:a\\s+)?task\\s+to)\\s+", RegexOption.IGNORE_CASE)
         val haveFiller = Regex("^\\s*(?:i\\s+)?have\\s+(?:(?:a|an|the)\\s+)?", RegexOption.IGNORE_CASE)
         value = when {
+            requestFiller.containsMatchIn(value) -> requestFiller.replaceFirst(value, "")
             actionFiller.containsMatchIn(value) -> actionFiller.replaceFirst(value, "")
             sourceHaveIsFraming && Regex("^\\s*have\\b", RegexOption.IGNORE_CASE).containsMatchIn(value) -> haveFiller.replaceFirst(value, "")
             Regex("^\\s*i\\s+have\\s+(?:a|an|the)\\s+", RegexOption.IGNORE_CASE).containsMatchIn(value) -> haveFiller.replaceFirst(value, "")

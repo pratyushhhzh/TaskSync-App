@@ -5,8 +5,6 @@ import java.time.Clock
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import java.util.UUID
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -16,6 +14,10 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.suspendCancellableCoroutine
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.Response
 
 internal data class HttpResult(val statusCode: Int, val body: String?)
 
@@ -47,7 +49,7 @@ internal class InterpretationRepository(
         val id = requestId()
         val now = clock.instant().atZone(clock.zone)
         val request = InterpretationRequest(
-            schemaVersion = "1",
+            schemaVersion = "2",
             requestId = id,
             transcript = transcript,
             localeHint = localeHint,
@@ -77,12 +79,15 @@ internal class InterpretationRepository(
             ?: throw InterpretationException("The interpretation server returned an empty response.", retryable = true)
         if (result.statusCode !in 200..299) {
             val error = runCatching { json.decodeFromString<BackendErrorResponse>(responseBody).error }.getOrNull()
+            val safeErrorCode = error?.code?.takeIf { it.matches(Regex("[A-Z0-9_]{1,64}")) } ?: "unavailable"
+            debugLog?.invoke("Interpretation backend error code=$safeErrorCode")
             val friendly = when (error?.code) {
                 "UNAUTHENTICATED" -> "Backend authentication failed. Check the local backend token."
                 "INTERPRETER_NOT_CONFIGURED" -> error.message
                 "RATE_LIMITED" -> "The interpretation service is busy. Please retry shortly."
                 "UPSTREAM_TIMEOUT" -> "The interpretation service timed out. Please retry."
                 "UPSTREAM_UNAVAILABLE" -> "The interpretation service is temporarily unavailable. Please retry."
+                "UPSTREAM_REJECTED" -> "The interpretation provider rejected this request. Check the backend configuration and retry."
                 "INVALID_MODEL_RESPONSE" -> "The interpretation service returned a response that could not be reviewed. Please retry."
                 "INVALID_REQUEST" -> "The interpretation request was rejected. Please close and try again."
                 else -> "Interpretation failed (HTTP ${result.statusCode}). Please retry."
@@ -93,11 +98,13 @@ internal class InterpretationRepository(
         val response = try {
             json.decodeFromString<InterpretationResponse>(responseBody)
         } catch (exception: SerializationException) {
+            debugLog?.invoke("Interpretation response deserialization failure: ${exception.javaClass.simpleName}")
             throw InterpretationException("The interpretation server returned data the app could not read.", "INVALID_RESPONSE", false)
         }
         try {
             response.validateFor(id)
         } catch (exception: IllegalArgumentException) {
+            debugLog?.invoke("Interpretation response validation failure: ${exception.javaClass.simpleName}")
             throw InterpretationException("The interpretation server returned an inconsistent proposal response.", "INVALID_RESPONSE", false)
         }
         return response
@@ -112,16 +119,27 @@ private class OkHttpInterpretationTransport(
         .callTimeout(55, TimeUnit.SECONDS)
         .build(),
 ) : InterpretationTransport {
-    override suspend fun post(url: String, authorization: String, body: String): HttpResult = withContext(Dispatchers.IO) {
+    override suspend fun post(url: String, authorization: String, body: String): HttpResult = suspendCancellableCoroutine { continuation ->
         val request = Request.Builder()
             .url(url)
             .header("Authorization", authorization)
             .header("Accept", "application/json")
             .post(body.toRequestBody(JSON_MEDIA_TYPE))
             .build()
-        client.newCall(request).execute().use { response ->
-            HttpResult(response.code, response.body?.string())
-        }
+        val call = client.newCall(request)
+        continuation.invokeOnCancellation { call.cancel() }
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, error: IOException) {
+                continuation.resumeWith(Result.failure(error))
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                val result = runCatching {
+                    response.use { HttpResult(it.code, it.body?.string()) }
+                }
+                continuation.resumeWith(result)
+            }
+        })
     }
 
     private companion object {

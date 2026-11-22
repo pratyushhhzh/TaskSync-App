@@ -13,8 +13,6 @@ import com.example.tasksync.data.interpretation.TaskRepositoryProposalStore
 import com.example.tasksync.data.interpretation.TaskProposalMatcher
 import com.example.tasksync.data.interpretation.TaskTitleNormalizer
 import com.example.tasksync.data.interpretation.dateAndTimePhrases
-import com.example.tasksync.data.interpretation.requiresExactTime
-import com.example.tasksync.data.interpretation.impliesDate
 import com.example.tasksync.data.local.AppDatabase
 import com.example.tasksync.data.local.entity.TaskEntity
 import com.example.tasksync.data.remote.AddProposal
@@ -27,6 +25,7 @@ import com.example.tasksync.data.repository.TaskRepository
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.Clock
+import java.time.ZoneId
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -37,14 +36,14 @@ data class ProposalReviewState(
     val rows: List<ReviewProposal> = emptyList(),
     val applying: Boolean = false,
     val summary: String? = null,
+    val finished: Boolean = false,
+    val loadError: String? = null,
 )
 
 class ProposalReviewViewModel(application: Application) : AndroidViewModel(application) {
     private val taskRepository: TaskRepository
     private val store: ProposalTaskStore
     private val matcher = TaskProposalMatcher()
-    private val clock = Clock.systemDefaultZone()
-    private val resolver = LocalDateTimeResolver(clock)
     private val coordinator: ProposalExecutionCoordinator
     private val _state = MutableStateFlow(ProposalReviewState())
     val state: StateFlow<ProposalReviewState> = _state.asStateFlow()
@@ -60,10 +59,17 @@ class ProposalReviewViewModel(application: Application) : AndroidViewModel(appli
     fun load(response: InterpretationResponse) {
         if (loadedRequestId == response.requestId) return
         loadedRequestId = response.requestId
+        val localZone = ZoneId.systemDefault()
+        val responseClock = Clock.fixed(Clock.system(localZone).instant(), localZone)
+        val responseResolver = LocalDateTimeResolver(responseClock)
         viewModelScope.launch {
             _state.value = ProposalReviewState(loading = true)
-            val tasks = store.allTasks()
-            _state.value = ProposalReviewState(loading = false, rows = response.operations.map { seed(response.requestId, it, tasks) })
+            try {
+                val tasks = store.allTasks()
+                _state.value = ProposalReviewState(loading = false, rows = response.operations.map { seed(response.requestId, it, tasks, responseResolver) })
+            } catch (failure: Exception) {
+                _state.value = ProposalReviewState(loading = false, loadError = "Could not load local tasks for proposal review. ${failure.message.orEmpty()}")
+            }
         }
     }
 
@@ -72,6 +78,7 @@ class ProposalReviewViewModel(application: Application) : AndroidViewModel(appli
     fun chooseTask(id: String, taskId: String) = update(id) { row -> normalize(row.copy(matchedTaskId = taskId)) }
     fun editTitle(id: String, value: String) = update(id) { row -> normalize(row.copy(editedTitle = value)) }
     fun editDescription(id: String, value: String) = update(id) { row -> normalize(row.copy(editedDescription = value)) }
+    fun selectPriority(id: String, value: Int?) = update(id) { row -> row.copy(selectedPriority = value) }
     fun selectDate(id: String, value: LocalDate?) = update(id) { row ->
         normalize(row.withDateSelection(value))
     }
@@ -79,29 +86,46 @@ class ProposalReviewViewModel(application: Application) : AndroidViewModel(appli
         normalize(row.withTimeSelection(value))
     }
 
-    fun applySelected() {
+    fun applySelected(notificationPermissionGranted: Boolean = true) {
         if (_state.value.applying) return
         val rows = _state.value.rows
         val approved = rows.filter { it.selected && it.canApply }.map { it.executionKey }.toSet()
         if (approved.isEmpty() || rows.any { it.selected && !it.canApply }) return
-        _state.value = _state.value.copy(applying = true, summary = null)
+        _state.value = _state.value.copy(applying = true, summary = null, finished = false)
         viewModelScope.launch {
-            val outcomes = coordinator.executeAfterApproval(rows, approved).associateBy { it.operationId }
+            val outcomes = coordinator.executeAfterApproval(rows, approved, notificationPermissionGranted).associateBy { it.operationId }
             val latest = _state.value.rows.map { row ->
                 val result = outcomes[row.executionKey] ?: return@map row
-                row.copy(selected = false, outcome = result)
+                row.copy(selected = if (result.succeeded) false else row.selected, outcome = result)
             }
             val success = outcomes.values.count { it.succeeded }
             val failure = outcomes.size - success
+            val succeededRows = rows.filter { outcomes[it.executionKey]?.succeeded == true }
+            val counts = succeededRows.groupingBy { row ->
+                when (row.operation) {
+                    is AddProposal -> "added"
+                    is UpdateProposal -> "updated"
+                    is CompleteProposal -> "completed"
+                    is DeleteProposal -> "deleted"
+                }
+            }.eachCount()
+            val breakdown = listOf("added", "updated", "completed", "deleted")
+                .mapNotNull { kind -> counts[kind]?.let { "$it $kind" } }
+                .joinToString(", ")
             _state.value = _state.value.copy(
                 rows = latest,
                 applying = false,
-                summary = "$success operation(s) applied; $failure operation(s) failed or were not applied.",
+                summary = buildString {
+                    if (success > 0) append("Applied: $breakdown. ")
+                    if (failure > 0) append("$failure operation(s) failed and remain selected for correction or retry.")
+                    else append("All approved operations were saved successfully.")
+                }.trim(),
+                finished = success > 0 && failure == 0,
             )
         }
     }
 
-    private fun seed(requestId: String, operation: ProposedOperation, tasks: List<TaskEntity>): ReviewProposal {
+    private fun seed(requestId: String, operation: ProposedOperation, tasks: List<TaskEntity>, resolver: LocalDateTimeResolver): ReviewProposal {
         val target = when (operation) {
             is UpdateProposal -> operation.targetText
             is CompleteProposal -> operation.targetText
@@ -130,24 +154,25 @@ class ProposalReviewViewModel(application: Application) : AndroidViewModel(appli
             matchQuality = result?.quality,
             dueDateInput = resolved.date?.toString().orEmpty(),
             dueTimeInput = resolved.time?.toString()?.take(5).orEmpty(),
+            inferredDeadline = resolved.dateWasInferred,
+            dateResolutionUnresolved = resolved.dateUnresolved,
+            timeResolutionUnresolved = resolved.timeUnresolved,
             editedTitle = addProposal?.let { TaskTitleNormalizer.normalize(it.title, it.sourceText, it.datePhrase, it.timePhrase) }
                 ?: (operation as? UpdateProposal)?.changes?.title.orEmpty(),
-            issues = listOfNotNull(matchIssue) + resolved.unresolved,
+            issues = listOfNotNull(matchIssue),
         )
         // All proposals start included. A user may explicitly exclude an unresolved
         // proposal, or resolve it inline before the single batch approval.
-        return row.copy(selected = true)
+        return normalize(row.copy(selected = true))
     }
 
     private fun normalize(row: ReviewProposal): ReviewProposal {
-        val (datePhrase, explicitTimePhrase) = row.operation.dateAndTimePhrases()
-        val timePhrase = explicitTimePhrase ?: datePhrase.takeIf { it.requiresExactTime() }
         val dateErrors = mutableListOf<String>()
-        if (!row.dateClearedByUser && (datePhrase != null || timePhrase.impliesDate()) && runCatching { LocalDate.parse(row.dueDateInput) }.isFailure) dateErrors += "Choose a specific date in the calendar."
-        if (!row.timeClearedByUser && timePhrase != null && runCatching { LocalTime.parse(row.dueTimeInput) }.isFailure) dateErrors += "Choose a valid time in the clock picker."
+        if (row.dueDateInput.isNotBlank() && runCatching { LocalDate.parse(row.dueDateInput) }.isFailure) dateErrors += "Choose a valid date in the calendar."
+        if (row.dueTimeInput.isNotBlank() && runCatching { LocalTime.parse(row.dueTimeInput) }.isFailure) dateErrors += "Choose a valid time in the clock picker."
         val chosenDate = runCatching { LocalDate.parse(row.dueDateInput) }.getOrNull()
         val chosenTime = runCatching { LocalTime.parse(row.dueTimeInput) }.getOrNull()
-        val now = java.time.LocalDateTime.now(clock)
+        val now = java.time.LocalDateTime.now(ZoneId.systemDefault())
         if (chosenDate != null && (chosenDate.isBefore(now.toLocalDate()) ||
                 (chosenTime != null && chosenDate.atTime(chosenTime).isBefore(now)))) {
             dateErrors += "This is in the past. Select a future date and time."
@@ -160,7 +185,7 @@ class ProposalReviewViewModel(application: Application) : AndroidViewModel(appli
 
     private inline fun update(id: String, transform: (ReviewProposal) -> ReviewProposal) {
         _state.value = _state.value.copy(rows = _state.value.rows.map { row ->
-            if (row.operationId == id) transform(row) else row
-        })
+            if (row.operationId == id) transform(row).copy(outcome = null) else row
+        }, summary = null, finished = false)
     }
 }

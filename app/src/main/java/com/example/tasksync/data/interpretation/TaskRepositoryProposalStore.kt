@@ -11,8 +11,20 @@ class TaskRepositoryProposalStore(
 ) : ProposalTaskStore {
     override suspend fun allTasks(): List<TaskEntity> = taskDao.getAllTasksOnce()
     override suspend fun taskById(id: String): TaskEntity? = repository.getTaskById(id)
-    override suspend fun add(title: String, description: String?, dueDate: String?, dueTime: String?): TaskEntity =
-        repository.createTask(title = title, description = description, dueDate = dueDate, dueTime = dueTime)
+    override suspend fun add(
+        title: String,
+        description: String?,
+        dueDate: String?,
+        dueTime: String?,
+        priority: Int,
+        reminderRequested: Boolean,
+        notificationPermissionGranted: Boolean,
+    ): ProposalTaskCreationResult {
+        val result = repository.createTaskWithReminderOutcome(
+            title, description, dueDate, dueTime, reminderRequested, notificationPermissionGranted, priority,
+        )
+        return ProposalTaskCreationResult(result.task, result.reminderStatus)
+    }
     override suspend fun update(task: TaskEntity) = repository.updateTask(task)
     override suspend fun complete(id: String): Boolean {
         val task = repository.getTaskById(id) ?: return false

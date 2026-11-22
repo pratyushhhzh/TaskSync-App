@@ -19,10 +19,10 @@ import com.example.tasksync.ui.theme.PriorityNone
 @Composable
 fun PriorityBadge(priority: Int, modifier: Modifier = Modifier) {
     val (label, color) = when (priority) {
-        1 -> "P1" to PriorityHigh
-        2 -> "P2" to PriorityMedium
-        3 -> "P3" to PriorityLow
-        else -> "P4" to PriorityNone
+        1 -> "High" to PriorityHigh
+        2 -> "Medium" to PriorityMedium
+        3 -> "Low" to PriorityLow
+        else -> "None" to PriorityNone
     }
 
     Box(

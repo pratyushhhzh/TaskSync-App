@@ -1,6 +1,13 @@
 package com.example.tasksync.ui.interpretation
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import android.provider.Settings
 import android.text.format.DateFormat as AndroidDateFormat
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,6 +26,8 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -45,6 +54,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.tasksync.data.interpretation.MatchQuality
 import com.example.tasksync.data.interpretation.ReviewProposal
@@ -70,12 +80,21 @@ fun ProposalApprovalDialog(
     viewModel: ProposalReviewViewModel = viewModel(),
 ) {
     val state by viewModel.state.collectAsState()
+    val context = LocalContext.current
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        viewModel.applySelected(notificationPermissionGranted = granted)
+    }
     var dismissedUnsupported by remember(response.requestId) { mutableStateOf(emptySet<Int>()) }
     LaunchedEffect(response.requestId) { viewModel.load(response) }
     val pagerState = rememberPagerState(pageCount = { state.rows.size })
     val included = state.rows.filter { it.selected }
     val approvedCount = included.count { it.canApply }
     val unresolvedCount = included.count { !it.canApply }
+    val hasReminderOutcomeNeedingSettings = state.rows.any { row ->
+        row.outcome?.message?.let { message ->
+            message.contains("notification", ignoreCase = true) || message.contains("channel", ignoreCase = true)
+        } == true
+    }
 
     AlertDialog(
         onDismissRequest = { if (!state.applying) onDismiss() },
@@ -88,6 +107,7 @@ fun ProposalApprovalDialog(
                 Text("Confirmed transcript", style = MaterialTheme.typography.titleSmall)
                 Text(transcript, style = MaterialTheme.typography.bodySmall)
                 Text("${response.status.name.lowercase().replace('_', ' ')} · ${response.operations.size} operation(s)", style = MaterialTheme.typography.labelMedium)
+                state.loadError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 response.clarifications.forEach { item ->
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -109,7 +129,7 @@ fun ProposalApprovalDialog(
                 if (state.loading) {
                     CircularProgressIndicator()
                 } else if (state.rows.isEmpty()) {
-                    Text("There are no task changes to apply.")
+                    Text(state.loadError ?: "There are no task changes to apply.")
                 } else {
                     HorizontalPager(
                         state = pagerState,
@@ -131,16 +151,34 @@ fun ProposalApprovalDialog(
                     }
                 }
                 state.summary?.let { Text(it, style = MaterialTheme.typography.titleSmall) }
+                if (hasReminderOutcomeNeedingSettings) {
+                    TextButton(onClick = {
+                        val intent = Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                            .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                            .putExtra(Settings.EXTRA_CHANNEL_ID, com.example.tasksync.data.reminder.TaskReminderScheduler.CHANNEL_ID)
+                        context.startActivity(intent)
+                    }) { Text("Open reminder notification settings") }
+                }
             }
         },
         confirmButton = {
             Button(
-                onClick = viewModel::applySelected,
-                enabled = approvedCount > 0 && unresolvedCount == 0 && !state.applying && !state.loading,
-            ) { Text(if (state.applying) "Applying…" else "Confirm & Apply ($approvedCount)") }
+                onClick = {
+                    if (state.finished) {
+                        onDismiss()
+                    } else {
+                        val needsPermission = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                            included.any { it.canApply && it.reminderRequested && it.dueDateInput.isNotBlank() && it.dueTimeInput.isNotBlank() } &&
+                            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                        if (needsPermission) notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        else viewModel.applySelected()
+                    }
+                },
+                enabled = state.finished || (approvedCount > 0 && unresolvedCount == 0 && !state.applying && !state.loading),
+            ) { Text(if (state.finished) "Done" else if (state.applying) "Applying…" else "Confirm & Apply ($approvedCount)") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !state.applying) { Text("Close") }
+            TextButton(onClick = onDismiss, enabled = !state.applying) { Text(if (state.finished) "Done" else "Close") }
         },
     )
 }
@@ -184,13 +222,22 @@ private fun ProposalReviewCard(row: ReviewProposal, viewModel: ProposalReviewVie
                 is AddProposal -> {
                     OutlinedTextField(row.editedTitle, { viewModel.editTitle(row.operationId, it) }, label = { Text("Task title") }, modifier = Modifier.fillMaxWidth())
                     if (op.description != null) OutlinedTextField(row.editedDescription, { viewModel.editDescription(row.operationId, it) }, label = { Text("Description") }, modifier = Modifier.fillMaxWidth())
+                    PriorityField(row, viewModel, allowKeep = false)
                     DateField(row, viewModel)
                     TimeField(row, viewModel)
+                    if (row.reminderRequested) {
+                        Text(
+                            if (row.dueDateInput.isBlank() || row.dueTimeInput.isBlank()) "Reminder requested; choose both a date and time to schedule it."
+                            else "A reminder will be scheduled after you confirm this task.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                 }
                 is UpdateProposal -> {
                     Text("Requested target: ${op.targetText}", style = MaterialTheme.typography.bodyMedium)
                     if (op.changes.title != null) OutlinedTextField(row.editedTitle, { viewModel.editTitle(row.operationId, it) }, label = { Text("New title") }, modifier = Modifier.fillMaxWidth())
                     if (op.changes.description != null) OutlinedTextField(row.editedDescription, { viewModel.editDescription(row.operationId, it) }, label = { Text("New description") }, modifier = Modifier.fillMaxWidth())
+                    PriorityField(row, viewModel, allowKeep = true)
                     if (op.changes.datePhrase != null || op.changes.timePhrase.impliesDate()) DateField(row, viewModel)
                     if (op.changes.timePhrase != null || op.changes.datePhrase.requiresExactTime()) TimeField(row, viewModel)
                     TargetPicker(row, filteredMatches, viewModel)
@@ -210,6 +257,7 @@ private fun ProposalReviewCard(row: ReviewProposal, viewModel: ProposalReviewVie
             originalTimePhrase?.let { Text("Original time phrase: $it", style = MaterialTheme.typography.bodySmall) }
             originalDatePhrase?.let { Text("Spoken date phrase: $it", style = MaterialTheme.typography.bodySmall) }
             originalTimePhrase?.let { Text("Spoken time phrase: $it", style = MaterialTheme.typography.bodySmall) }
+            row.scheduleWarnings.forEach { Text(it, color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.bodySmall) }
             row.issues.forEach { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
             row.outcome?.let { result ->
                 Text(if (result.succeeded) result.message else "Not applied: ${result.message}", color = if (result.succeeded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
@@ -233,6 +281,7 @@ private fun DateField(row: ReviewProposal, viewModel: ProposalReviewViewModel) {
         }
         if (row.dueDateInput.isNotBlank()) TextButton(onClick = { viewModel.selectDate(row.operationId, null) }) { Text("Clear") }
     }
+    if (row.inferredDeadline) Text("Inferred deadline: end of this locale week. You can edit it.", style = MaterialTheme.typography.bodySmall)
     if (open) DatePickerDialog(
         onDismissRequest = { open = false },
         confirmButton = {
@@ -244,6 +293,27 @@ private fun DateField(row: ReviewProposal, viewModel: ProposalReviewViewModel) {
         },
         dismissButton = { TextButton(onClick = { open = false }) { Text("Cancel") } },
     ) { DatePicker(state = pickerState) }
+}
+
+@Composable
+private fun PriorityField(row: ReviewProposal, viewModel: ProposalReviewViewModel, allowKeep: Boolean) {
+    var expanded by remember(row.operationId) { mutableStateOf(false) }
+    val label = when (row.selectedPriority) {
+        1 -> "High"
+        2 -> "Medium"
+        3 -> "Low"
+        4 -> "No priority"
+        else -> "Keep existing priority"
+    }
+    Box {
+        OutlinedButton(onClick = { expanded = true }) { Text("Priority: $label") }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            if (allowKeep) DropdownMenuItem(text = { Text("Keep existing") }, onClick = { expanded = false; viewModel.selectPriority(row.operationId, null) })
+            listOf(1 to "High", 2 to "Medium", 3 to "Low", 4 to "No priority").forEach { (value, text) ->
+                DropdownMenuItem(text = { Text(text) }, onClick = { expanded = false; viewModel.selectPriority(row.operationId, value) })
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

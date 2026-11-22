@@ -13,17 +13,21 @@ data class ResolvedDateTime(
     val date: LocalDate? = null,
     val time: LocalTime? = null,
     val unresolved: List<String> = emptyList(),
+    val dateWasInferred: Boolean = false,
+    val dateUnresolved: Boolean = false,
+    val timeUnresolved: Boolean = false,
 ) {
     val isResolved: Boolean get() = unresolved.isEmpty()
 }
 
-/** Conservative, device-local parser. Weekday phrases without a modifier mean the next occurrence. */
+/** Conservative device-local parser. Bare weekdays use the nearest occurrence on or after today. */
 class LocalDateTimeResolver(
     private val clock: Clock = Clock.systemDefaultZone(),
     private val locale: Locale = Locale.getDefault(),
 ) {
     fun resolve(datePhrase: String?, timePhrase: String?): ResolvedDateTime {
-        val today = LocalDate.now(clock)
+        val now = java.time.LocalDateTime.now(clock)
+        val today = now.toLocalDate()
         val issues = mutableListOf<String>()
         val dateText = clean(datePhrase)
         val timeText = clean(timePhrase)
@@ -32,21 +36,23 @@ class LocalDateTimeResolver(
             .replace(Regex("\\s+(?:at|by)\\s+\\d{1,2}:\\d{2}\\s*$", RegexOption.IGNORE_CASE), "")
             .replace(Regex("^\\d{1,2}(?::\\d{2})?\\s*(?:a\\.?\\s*m\\.?|p\\.?\\s*m\\.?|noon|midnight)\\s+(?:on\\s+)?", RegexOption.IGNORE_CASE), "")
             .replace(Regex("^\\d{1,2}:\\d{2}\\s+(?:on\\s+)?", RegexOption.IGNORE_CASE), "")
-            .replace(Regex("\\s+(?:morning|afternoon|evening|tonight|noon|midnight)$", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("(?:^|\\s+)(?:(?:this|in the)\\s+)?(?:morning|afternoon|evening|tonight|noon|midnight)$", RegexOption.IGNORE_CASE), "")
             .trim()
-        var date = resolveDate(dateOnlyText, today, datePhrase, issues)
-        if (date == null && dateText.isBlank()) {
-            when {
-                hasAny(timeText, "tomorrow", "day after tomorrow") -> date = today.plusDays(if (timeText.contains("day after tomorrow")) 2 else 1)
-                hasAny(timeText, "today", "tonight", "this evening", "this morning", "this afternoon", "आज", "aaj") -> date = today
-                hasAny(timeText, "kal", "कल") -> issues += "‘kal’ can mean yesterday or tomorrow; choose a date."
-            }
-        }
-
         val parseTimeFrom = timeText.ifBlank { dateText }
         val parsedTime = parsePreciseTime(parseTimeFrom)
         val timeCandidate = hasTimeCandidate(parseTimeFrom)
         val time = parsedTime
+        var date = resolveDate(dateOnlyText, today, datePhrase, issues, time, now)
+        if (date == null && dateOnlyText.isBlank()) {
+            when {
+                hasAny(dateText, "tomorrow", "day after tomorrow") || hasAny(timeText, "tomorrow", "day after tomorrow") ->
+                    date = today.plusDays(if (dateText.contains("day after tomorrow") || timeText.contains("day after tomorrow")) 2 else 1)
+                hasAny(dateText, "today", "tonight", "this evening", "this morning", "this afternoon", "आज", "aaj") ||
+                    hasAny(timeText, "today", "tonight", "this evening", "this morning", "this afternoon", "आज", "aaj") -> date = today
+                hasAny(dateText, "kal", "कल") || hasAny(timeText, "kal", "कल") -> issues += "‘kal’ can mean yesterday or tomorrow; choose a date."
+            }
+        }
+
         when {
             parsedTime != null -> Unit
             timeText.isBlank() && !timeCandidate && !containsBroadPeriod(dateText) -> Unit
@@ -60,13 +66,31 @@ class LocalDateTimeResolver(
 
         if (date != null && date.isBefore(today)) {
             issues += "The resolved date is in the past. Choose a date in the calendar."
-        } else if (date == today && time != null && date.atTime(time).isBefore(java.time.LocalDateTime.now(clock))) {
+        } else if (date == today && time != null && date.atTime(time).isBefore(now)) {
             issues += "The resolved time is in the past. Choose a future date and time."
         }
-        return ResolvedDateTime(date, time, issues.distinct())
+        val dateUnresolved = date == null && (dateOnlyText.isNotBlank() || hasAny(dateText, "kal", "कल") || hasAny(timeText, "kal", "कल"))
+        val timeUnresolved = parsedTime == null && (
+            containsBroadPeriod(timeText) || containsBroadPeriod(dateText) || timeCandidate || timeText.isNotBlank()
+        )
+        return ResolvedDateTime(
+            date = date,
+            time = time,
+            unresolved = issues.distinct(),
+            dateWasInferred = dateOnlyText == "this week",
+            dateUnresolved = dateUnresolved,
+            timeUnresolved = timeUnresolved,
+        )
     }
 
-    private fun resolveDate(text: String, today: LocalDate, original: String?, issues: MutableList<String>): LocalDate? {
+    private fun resolveDate(
+        text: String,
+        today: LocalDate,
+        original: String?,
+        issues: MutableList<String>,
+        timeHint: LocalTime?,
+        now: java.time.LocalDateTime,
+    ): LocalDate? {
         if (text.isBlank()) return null
         when {
             text in setOf("today", "आज", "aaj") -> return today
@@ -76,7 +100,11 @@ class LocalDateTimeResolver(
                 issues += "‘kal’ can mean yesterday or tomorrow; choose a date."
                 return null
             }
-            text == "this week" || text == "next week" -> {
+            text == "this week" -> {
+                val fields = localeWeekFields()
+                return today.with(fields.dayOfWeek(), 7)
+            }
+            text == "next week" -> {
                 issues += "‘${original}’ is a date range. Choose a specific day in the calendar."
                 return null
             }
@@ -87,11 +115,47 @@ class LocalDateTimeResolver(
             }
         }
 
+        // Explicit “next week” forms refer to the locale's next calendar week,
+        // whose first day comes from WeekFields (Monday for en-IN).
+        val dayOfNextWeek = Regex("^(.+?)\\s+of\\s+next\\s+weeks?$").matchEntire(text)
+        if (dayOfNextWeek != null) {
+            val day = parseWeekday(dayOfNextWeek.groupValues[1])
+            if (day != null) {
+                val fields = localeWeekFields()
+                val startOfCurrentWeek = today.with(fields.dayOfWeek(), 1)
+                return startOfCurrentWeek.plusWeeks(1).plusDays((day.value - fields.firstDayOfWeek.value + 7L) % 7L)
+            }
+        }
+        val explicitNextWeekDay = Regex(
+            "^(.+?)\\s+next\\s+weeks?$|^next\\s+weeks?['’]?s?\\s+(.+)$",
+        ).matchEntire(text)
+        val explicitDay = explicitNextWeekDay?.groupValues?.drop(1)?.firstOrNull { it.isNotBlank() }
+        if (explicitDay != null) {
+            val day = parseWeekday(explicitDay)
+            if (day != null) {
+                val fields = localeWeekFields()
+                val startOfCurrentWeek = today.with(fields.dayOfWeek(), 1)
+                return startOfCurrentWeek.plusWeeks(1).plusDays((day.value - fields.firstDayOfWeek.value + 7L) % 7L)
+            }
+        }
+
+        val nextWeekPrefix = Regex("^next\\s+week\\s+(.+)$").matchEntire(text)
+        if (nextWeekPrefix != null) {
+            val day = parseWeekday(nextWeekPrefix.groupValues[1])
+            if (day != null) {
+                val fields = localeWeekFields()
+                val startOfCurrentWeek = today.with(fields.dayOfWeek(), 1)
+                return startOfCurrentWeek.plusWeeks(1).plusDays((day.value - fields.firstDayOfWeek.value + 7L) % 7L)
+            }
+        }
+
+        resolveOrdinalWeekday(text, today)?.let { return it }
+
         val weekdayAtNextWeek = Regex("^(.+?)\\s+next week$").matchEntire(text)
         if (weekdayAtNextWeek != null) {
             val day = parseWeekday(weekdayAtNextWeek.groupValues[1])
             if (day != null) {
-                val fields = WeekFields.of(locale)
+                val fields = localeWeekFields()
                 val startOfCurrentWeek = today.with(fields.dayOfWeek(), 1)
                 return startOfCurrentWeek.plusWeeks(1).plusDays((day.value - fields.firstDayOfWeek.value + 7L) % 7L)
             }
@@ -103,13 +167,19 @@ class LocalDateTimeResolver(
             val day = parseWeekday(prefixedWeekday.groupValues[2])
             if (day != null) {
                 if (modifier == "this") {
-                    val fields = WeekFields.of(locale)
+                    val fields = localeWeekFields()
                     return today.with(fields.dayOfWeek(), 1).plusDays((day.value - fields.firstDayOfWeek.value + 7L) % 7L)
                 }
                 return nextWeekday(today, day)
             }
         }
-        parseWeekday(text)?.let { return nextWeekday(today, it) }
+        parseWeekday(text)?.let { day ->
+            val offset = (day.value - today.dayOfWeek.value + 7) % 7
+            val occurrence = today.plusDays(offset.toLong())
+            return if (occurrence == today && timeHint != null && today.atTime(timeHint).isBefore(now)) {
+                today.plusWeeks(1)
+            } else occurrence
+        }
 
         parseMonthDate(text, today)?.let { return it }
         parseNumericDate(text, today)?.let { return it }
@@ -126,6 +196,10 @@ class LocalDateTimeResolver(
         if (offset == 0) offset = 7
         return today.plusDays(offset.toLong())
     }
+
+    private fun localeWeekFields(): WeekFields =
+        if (locale.country.equals("IN", ignoreCase = true)) WeekFields.of(DayOfWeek.MONDAY, 1)
+        else WeekFields.of(locale)
 
     private fun parseWeekday(raw: String): DayOfWeek? {
         val value = raw.trim().trimEnd('.', ',')
@@ -144,15 +218,44 @@ class LocalDateTimeResolver(
                 .distinct().map { it.lowercase(locale) to month }
         }.distinctBy { it.first }.sortedByDescending { it.first.length }
         for ((name, month) in months) {
-            val dayFirst = Regex("^(\\d{1,2})\\s+${Regex.escape(name)}(?:\\s+(\\d{4}))?$").matchEntire(text)
-            val monthFirst = Regex("^${Regex.escape(name)}\\s+(\\d{1,2})(?:,?\\s+(\\d{4}))?$").matchEntire(text)
+            val dayFirst = Regex("^(\\d{1,2})(?:st|nd|rd|th)?\\s+${Regex.escape(name)}(?:,?\\s+(\\d{4}))?$").matchEntire(text)
+            val monthFirst = Regex("^${Regex.escape(name)}\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?$").matchEntire(text)
             val match = dayFirst ?: monthFirst ?: continue
             val day = match.groupValues[1].toIntOrNull() ?: continue
             val year = match.groupValues[2].toIntOrNull() ?: today.year
             val parsed = runCatching { LocalDate.of(year, month, day) }.getOrNull() ?: return null
-            return if (match.groupValues[2].isBlank() && parsed.isBefore(today)) parsed.plusYears(1) else parsed
+            return parsed
         }
         return null
+    }
+
+    private fun resolveOrdinalWeekday(text: String, today: LocalDate): LocalDate? {
+        val match = Regex("^(?:([a-z]+)['’]s\\s+)?(first|1st|second|2nd|third|3rd|fourth|4th|last)\\s+([a-z]+)(?:\\s+of\\s+(.+))?$")
+            .matchEntire(text) ?: return null
+        val monthPhrase = match.groupValues[1].ifBlank { match.groupValues[4] }
+        val weekday = parseWeekday(match.groupValues[3]) ?: return null
+        val ordinal = when (match.groupValues[2]) {
+            "first", "1st" -> 1
+            "second", "2nd" -> 2
+            "third", "3rd" -> 3
+            "fourth", "4th" -> 4
+            "last" -> -1
+            else -> return null
+        }
+        val targetMonth = when (monthPhrase) {
+            "next month" -> today.plusMonths(1).withDayOfMonth(1)
+            else -> {
+                val month = Month.entries.firstOrNull { it.getDisplayName(TextStyle.FULL, Locale.ENGLISH).equals(monthPhrase, true) || it.getDisplayName(TextStyle.SHORT, Locale.ENGLISH).trimEnd('.').equals(monthPhrase, true) }
+                    ?: return null
+                LocalDate.of(today.year, month, 1)
+            }
+        }
+        val result = if (ordinal == -1) {
+            targetMonth.withDayOfMonth(targetMonth.lengthOfMonth()).with(java.time.temporal.TemporalAdjusters.previousOrSame(weekday))
+        } else {
+            targetMonth.with(java.time.temporal.TemporalAdjusters.dayOfWeekInMonth(ordinal, weekday))
+        }
+        return result
     }
 
     private fun parseNumericDate(text: String, today: LocalDate): LocalDate? {
@@ -206,6 +309,7 @@ class LocalDateTimeResolver(
         Regex("\\b(morning|afternoon|evening|tonight)\\b|सुबह|दोपहर|शाम|रात", RegexOption.IGNORE_CASE).containsMatchIn(value)
 
     private fun clean(value: String?): String = value.orEmpty().trim().lowercase(locale)
+        .replace(Regex("^(?:on|by)\\s+"), "")
         .replace(Regex("^[\\p{Punct}\\s]+|[\\p{Punct}\\s]+$"), "")
         .replace(Regex("\\s+"), " ")
 
