@@ -1,5 +1,3 @@
-import java.util.Properties
-
 plugins {
     alias(libs.plugins.android.application)
     id("org.jetbrains.kotlin.plugin.compose")
@@ -7,17 +5,12 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
-val localTaskSyncProperties = Properties().apply {
-    rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
-}
-val debugBackendToken = localTaskSyncProperties.getProperty("tasksync.backendToken", "").trim()
-val productionBackendUrl = providers.gradleProperty("tasksync.productionBackendUrl").orNull
-    ?: System.getenv("TASKSYNC_PRODUCTION_BACKEND_URL")
-    ?: localTaskSyncProperties.getProperty("tasksync.productionBackendUrl", "")
-val escapedProductionBackendUrl = productionBackendUrl.replace("\\", "\\\\").replace("\"", "\\\"")
-val escapedDebugBackendToken = debugBackendToken.replace("\\", "\\\\").replace("\"", "\\\"")
-if (productionBackendUrl.isNotBlank() && !productionBackendUrl.startsWith("https://", ignoreCase = true)) {
-    throw GradleException("tasksync.productionBackendUrl must use HTTPS")
+val workerBaseUrl = providers.gradleProperty("tasksync.workerBaseUrl").orNull
+    ?: System.getenv("TASKSYNC_WORKER_BASE_URL")
+    ?: "https://cloudflare-worker.work-spaceeeee2.workers.dev/"
+val escapedWorkerBaseUrl = workerBaseUrl.replace("\\", "\\\\").replace("\"", "\\\"")
+if (!workerBaseUrl.startsWith("https://", ignoreCase = true)) {
+    throw GradleException("tasksync.workerBaseUrl must use HTTPS")
 }
 
 android {
@@ -36,13 +29,11 @@ android {
 
     buildTypes {
         debug {
-            buildConfigField("String", "INTERPRETATION_BASE_URL", "\"http://10.42.138.1:8000/\"")
-            buildConfigField("String", "BACKEND_AUTH_TOKEN", "\"$escapedDebugBackendToken\"")
+            buildConfigField("String", "INTERPRETATION_BASE_URL", "\"$escapedWorkerBaseUrl\"")
         }
         release {
             isMinifyEnabled = false
-            buildConfigField("String", "INTERPRETATION_BASE_URL", "\"$escapedProductionBackendUrl\"")
-            buildConfigField("String", "BACKEND_AUTH_TOKEN", "\"\"")
+            buildConfigField("String", "INTERPRETATION_BASE_URL", "\"$escapedWorkerBaseUrl\"")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

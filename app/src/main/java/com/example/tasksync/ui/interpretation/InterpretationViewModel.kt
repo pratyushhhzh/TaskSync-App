@@ -39,7 +39,6 @@ internal class InterpretationRequestGuard {
 class InterpretationViewModel(application: android.app.Application) : AndroidViewModel(application) {
     private val repository = InterpretationRepository(
         baseUrl = BuildConfig.INTERPRETATION_BASE_URL,
-        backendToken = BuildConfig.BACKEND_AUTH_TOKEN,
         networkSummary = if (BuildConfig.DEBUG) ({ AndroidNetworkDiagnostics.summary(application) }) else null,
         debugLog = if (BuildConfig.DEBUG) ({ message -> Log.d("TaskSyncNetwork", message) }) else null,
     )

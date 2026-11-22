@@ -22,7 +22,7 @@ import okhttp3.Response
 internal data class HttpResult(val statusCode: Int, val body: String?)
 
 internal fun interface InterpretationTransport {
-    suspend fun post(url: String, authorization: String, body: String): HttpResult
+    suspend fun post(url: String, body: String): HttpResult
 }
 
 internal class InterpretationException(
@@ -33,7 +33,6 @@ internal class InterpretationException(
 
 internal class InterpretationRepository(
     private val baseUrl: String,
-    private val backendToken: String,
     private val transport: InterpretationTransport = OkHttpInterpretationTransport(),
     private val json: Json = interpretationJson,
     private val clock: Clock = Clock.systemDefaultZone(),
@@ -44,7 +43,6 @@ internal class InterpretationRepository(
     suspend fun interpret(transcript: String, localeHint: String?): InterpretationResponse {
         if (transcript.isBlank()) throw InterpretationException("The confirmed transcript is empty.", retryable = false)
         if (baseUrl.isBlank()) throw InterpretationException("The interpretation server URL is not configured.", retryable = false)
-        if (backendToken.isBlank()) throw InterpretationException("Backend authentication is not configured for this build.", retryable = false)
 
         val id = requestId()
         val now = clock.instant().atZone(clock.zone)
@@ -61,7 +59,6 @@ internal class InterpretationRepository(
         val result = try {
             transport.post(
                 url = "${baseUrl.trimEnd('/')}/v1/interpretations",
-                authorization = "Bearer $backendToken",
                 body = body,
             )
         } catch (exception: IOException) {
@@ -119,10 +116,9 @@ private class OkHttpInterpretationTransport(
         .callTimeout(55, TimeUnit.SECONDS)
         .build(),
 ) : InterpretationTransport {
-    override suspend fun post(url: String, authorization: String, body: String): HttpResult = suspendCancellableCoroutine { continuation ->
+    override suspend fun post(url: String, body: String): HttpResult = suspendCancellableCoroutine { continuation ->
         val request = Request.Builder()
             .url(url)
-            .header("Authorization", authorization)
             .header("Accept", "application/json")
             .post(body.toRequestBody(JSON_MEDIA_TYPE))
             .build()

@@ -17,7 +17,7 @@ class InterpretationRepositoryTest {
     private val zone = ZoneId.of("Asia/Kolkata")
     private val clock = Clock.fixed(Instant.parse("2026-11-18T10:15:30Z"), zone)
 
-    @Test fun requestUsesExactTranscriptAndBackendContract() = runBlocking {
+    @Test fun requestUsesExactTranscriptAndWorkerContractWithoutBearerAuthentication() = runBlocking {
         val transcript = "  Remind me: kal 5 baje call the doctor.  "
         val transport = FakeTransport(success(response(operations = listOf(add("op-1")))))
         repository(transport).interpret(transcript, "hi-IN")
@@ -28,8 +28,7 @@ class InterpretationRepositoryTest {
         assertEquals("hi-IN", sent.localeHint)
         assertEquals("2026-11-18T15:45:30+05:30", sent.referenceTime)
         assertEquals("Asia/Kolkata", sent.timeZone)
-        assertEquals("http://10.11.60.1:8000/v1/interpretations", transport.url)
-        assertEquals("Bearer local-token", transport.authorization)
+        assertEquals("https://cloudflare-worker.work-spaceeeee2.workers.dev/v1/interpretations", transport.url)
     }
 
     @Test fun decodesFiveAndEightSeparateOperations() = runBlocking {
@@ -117,7 +116,7 @@ class InterpretationRepositoryTest {
 
     @Test fun timeoutIsRetryableAndExplained() = runBlocking {
         val transport = object : InterpretationTransport {
-            override suspend fun post(url: String, authorization: String, body: String): HttpResult = throw SocketTimeoutException()
+            override suspend fun post(url: String, body: String): HttpResult = throw SocketTimeoutException()
         }
         val error = runCatching { repository(transport).interpret("text", null) }.exceptionOrNull()
         assertTrue(error is InterpretationException)
@@ -125,13 +124,11 @@ class InterpretationRepositoryTest {
         assertTrue(error.message!!.contains("timed out"))
     }
 
-    @Test fun debugNetworkDiagnosticsExcludeTranscriptAndCredentials() = runBlocking {
+    @Test fun debugNetworkDiagnosticsExcludeTranscript() = runBlocking {
         val log = mutableListOf<String>()
         val transcript = "private voice transcript"
-        val token = "sensitive-local-token"
         val repository = InterpretationRepository(
-            baseUrl = "http://10.11.60.1:8000/",
-            backendToken = token,
+            baseUrl = "https://cloudflare-worker.work-spaceeeee2.workers.dev/",
             transport = FakeTransport(success(response(operations = listOf(add("op-1"))))),
             clock = clock,
             requestId = { "request-test" },
@@ -144,7 +141,6 @@ class InterpretationRepositoryTest {
         assertTrue(combined.contains("wifi"))
         assertTrue(combined.contains("HTTP status=200"))
         assertFalse(combined.contains(transcript))
-        assertFalse(combined.contains(token))
     }
 
     @Test fun backendResponseMustMatchRequestAndStatusContents() = runBlocking {
@@ -179,8 +175,7 @@ class InterpretationRepositoryTest {
     }
 
     private fun repository(transport: InterpretationTransport, debugLog: ((String) -> Unit)? = null) = InterpretationRepository(
-        baseUrl = "http://10.11.60.1:8000/",
-        backendToken = "local-token",
+        baseUrl = "https://cloudflare-worker.work-spaceeeee2.workers.dev/",
         transport = transport,
         clock = clock,
         requestId = { "request-test" },
@@ -201,11 +196,9 @@ class InterpretationRepositoryTest {
 
     private class FakeTransport(private val result: HttpResult) : InterpretationTransport {
         var url: String? = null
-        var authorization: String? = null
         var body: String? = null
-        override suspend fun post(url: String, authorization: String, body: String): HttpResult {
+        override suspend fun post(url: String, body: String): HttpResult {
             this.url = url
-            this.authorization = authorization
             this.body = body
             return result
         }
@@ -214,7 +207,7 @@ class InterpretationRepositoryTest {
     private class SequenceTransport(vararg results: HttpResult) : InterpretationTransport {
         private val remaining = ArrayDeque(results.toList())
         val transcripts = mutableListOf<String>()
-        override suspend fun post(url: String, authorization: String, body: String): HttpResult {
+        override suspend fun post(url: String, body: String): HttpResult {
             transcripts += Json.decodeFromString<InterpretationRequest>(body).transcript
             return remaining.removeFirst()
         }
