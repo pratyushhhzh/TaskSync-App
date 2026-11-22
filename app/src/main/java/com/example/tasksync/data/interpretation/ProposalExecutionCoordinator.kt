@@ -161,6 +161,7 @@ class ProposalExecutionCoordinator(private val store: ProposalTaskStore) {
             when (created.reminderStatus) {
                 ReminderScheduleStatus.NOT_REQUESTED -> "Task added."
                 ReminderScheduleStatus.SCHEDULED -> "Task added. Reminder scheduled; Android may deliver it shortly after the selected time."
+                ReminderScheduleStatus.SCHEDULED_INEXACT -> "Task added. Reminder scheduled, but Android may delay delivery because exact-alarm access is unavailable."
                 ReminderScheduleStatus.MISSING_DATE_TIME -> "Task added. Reminder not scheduled because a date and time are required."
                 ReminderScheduleStatus.PERMISSION_REQUIRED -> "Task added. Reminder not scheduled because notification permission is required."
                 ReminderScheduleStatus.APP_NOTIFICATIONS_DISABLED -> "Task added. Reminder not scheduled because app notifications are disabled."

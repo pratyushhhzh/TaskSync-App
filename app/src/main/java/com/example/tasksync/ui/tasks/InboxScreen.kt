@@ -114,10 +114,10 @@ fun InboxScreen(viewModel: TaskListViewModel = viewModel()) {
                 projects = projects,
                 subtasks = subtasks,
                 onDismissRequest = { showBottomSheet = false },
-                onSaveTask = { title, desc, date, time, priority, projectId, reminderEnabled, recurrenceRule ->
+                onSaveTask = { title, desc, date, time, priority, projectId, reminderEnabled, recurrenceRule, reminderOffsets, customReminderAt ->
                     val task = selectedTask
-                    if (task == null) viewModel.createTask(title, desc, "inbox", date, time, reminderEnabled, recurrenceRule, priority, projectId)
-                    else viewModel.updateTask(task.copy(title = title, description = desc, dueDate = date, dueTime = time, priority = priority, projectId = projectId, reminderEnabled = reminderEnabled, recurrenceRule = recurrenceRule))
+                    if (task == null) viewModel.createTask(title, desc, "inbox", date, time, reminderEnabled, recurrenceRule, priority, projectId, reminderOffsets, customReminderAt)
+                    else viewModel.updateTask(task.copy(title = title, description = desc, dueDate = date, dueTime = time, priority = priority, projectId = projectId, reminderEnabled = reminderEnabled, recurrenceRule = recurrenceRule), reminderOffsets, customReminderAt)
                 },
                 onDeleteTask = { viewModel.deleteTask(it); showBottomSheet = false },
                 onAddSubtask = { title -> selectedTask?.let { viewModel.addSubtask(it.id, title) } },

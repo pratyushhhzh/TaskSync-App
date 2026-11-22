@@ -1,35 +1,48 @@
 package com.example.tasksync.ui.interpretation
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.tasksync.data.remote.AddProposal
-import com.example.tasksync.data.remote.CompleteProposal
-import com.example.tasksync.data.remote.DeleteProposal
-import com.example.tasksync.data.remote.ProposedOperation
-import com.example.tasksync.data.remote.UpdateProposal
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun InterpretationReviewDialog(
     transcript: String,
@@ -51,78 +64,63 @@ fun InterpretationReviewDialog(
         }
     }
 
-    AlertDialog(
-        onDismissRequest = dismiss,
-        title = { Text("Interpretation review") },
-        text = {
-            Column(
-                modifier = Modifier.fillMaxWidth().heightIn(max = 560.dp).verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+    Dialog(onDismissRequest = dismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        androidx.compose.foundation.layout.Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.68f)), contentAlignment = Alignment.BottomCenter) {
+        AnimatedVisibility(visible = true, enter = fadeIn(tween(350)) + slideInVertically(tween(550)) { it / 6 }, modifier = Modifier.align(Alignment.BottomCenter)) {
+        Surface(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 12.dp).heightIn(min = 420.dp, max = 700.dp),
+            shape = RoundedCornerShape(36.dp),
+            color = Color(0xFF131A48),
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
+            shadowElevation = 22.dp,
+        ) {
+        Column(
+            Modifier.fillMaxWidth().heightIn(max = 700.dp).padding(horizontal = 22.dp).padding(bottom = 22.dp),
+            verticalArrangement = Arrangement.spacedBy(15.dp),
+        ) {
+            Surface(Modifier.align(Alignment.CenterHorizontally).padding(top = 10.dp, bottom = 3.dp).size(width = 38.dp, height = 4.dp), color = Color.White.copy(alpha = 0.28f), shape = CircleShape) {}
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Reading your tasks…", style = MaterialTheme.typography.titleLarge)
+                    Text("Finding tasks, dates and priorities", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                IconButton(onClick = dismiss) { Icon(Icons.Default.Close, contentDescription = "Close interpretation", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+            Surface(
+                Modifier.fillMaxWidth().heightIn(max = 190.dp),
+                shape = RoundedCornerShape(22.dp),
+                color = Color(0xFF080B13).copy(alpha = 0.55f),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.1f)),
             ) {
-                Text("Confirmed transcript", style = MaterialTheme.typography.titleSmall)
-                SelectionContainer { Text(transcript) }
-                when (val current = state) {
-                    InterpretationUiState.Idle, is InterpretationUiState.Loading -> {
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            CircularProgressIndicator()
-                            val attempt = (state as? InterpretationUiState.Loading)?.attempt ?: 1
-                            Text(if (attempt > 1) "Retrying interpretation…" else "Requesting proposals…")
-                        }
-                    }
-                    is InterpretationUiState.Failure -> {
-                        Text(current.message, color = MaterialTheme.colorScheme.error)
-                        if (current.canRetryInterpretation()) {
-                            Button(onClick = viewModel::retry, modifier = Modifier.fillMaxWidth()) { Text("Retry interpretation") }
-                        } else {
-                            Text("Your confirmed transcript is retained above. Select and copy it before closing if you need to reuse it after correcting the issue.")
-                        }
-                    }
-                    is InterpretationUiState.Success -> Text(if (current.transcript == transcript && viewModel.isCurrentAttempt(current.attempt)) "Preparing the proposal review…" else "Requesting proposals…")
+                Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("CONFIRMED TRANSCRIPT", style = MaterialTheme.typography.labelMedium, color = Color(0xFFBFD0FF), letterSpacing = 0.8.sp)
+                    SelectionContainer { Text(transcript, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onBackground) }
                 }
             }
-        },
-        confirmButton = {
-            Button(onClick = dismiss) { Text("Close") }
-        },
-    )
-}
-
-@Composable
-private fun ProposalCard(operation: ProposedOperation) {
-    val kind = when (operation) {
-        is AddProposal -> "ADD"
-        is UpdateProposal -> "UPDATE"
-        is CompleteProposal -> "COMPLETE"
-        is DeleteProposal -> "DELETE"
-    }
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(kind, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-            when (operation) {
-                is AddProposal -> {
-                    Text(operation.title, style = MaterialTheme.typography.titleMedium)
-                    operation.description?.let { Text("Description: $it") }
-                    operation.datePhrase?.let { Text("Date: $it") }
-                    operation.timePhrase?.let { Text("Time: $it") }
+            when (val current = state) {
+                InterpretationUiState.Idle, is InterpretationUiState.Loading -> {
+                    Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator()
+                        val attempt = (state as? InterpretationUiState.Loading)?.attempt ?: 1
+                        Text(if (attempt > 1) "Retrying interpretation…" else "Requesting proposals…", modifier = Modifier.padding(start = 12.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
-                is UpdateProposal -> {
-                    Text("Target: ${operation.targetText}")
-                    operation.changes.title?.let { Text("New title: $it") }
-                    operation.changes.description?.let { Text("Description: $it") }
-                    operation.changes.datePhrase?.let { Text("Date: $it") }
-                    operation.changes.timePhrase?.let { Text("Time: $it") }
+                is InterpretationUiState.Failure -> {
+                    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.error.copy(alpha = 0.1f), border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.25f))) {
+                        Text(current.message, Modifier.padding(14.dp), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+                    }
+                    if (current.canRetryInterpretation()) {
+                        Button(onClick = viewModel::retry, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(26.dp)) { Text("Retry interpretation") }
+                    } else {
+                        Text("Your confirmed transcript is still here. Close when you’re ready to try again.", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                    }
                 }
-                is CompleteProposal -> Text("Task: ${operation.targetText}")
-                is DeleteProposal -> Text("Task: ${operation.targetText}")
+                is InterpretationUiState.Success -> Text("Preparing the proposal review…", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Text("Source: ${operation.sourceText}", style = MaterialTheme.typography.bodySmall)
+            Button(onClick = dismiss, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(26.dp)) { Text("Close") }
+        }
+        }
+        }
         }
     }
-}
-
-private fun com.example.tasksync.data.remote.InterpretationStatus.label(): String = when (this) {
-    com.example.tasksync.data.remote.InterpretationStatus.PROPOSALS -> "Proposals"
-    com.example.tasksync.data.remote.InterpretationStatus.NEEDS_CLARIFICATION -> "Needs clarification"
-    com.example.tasksync.data.remote.InterpretationStatus.UNSUPPORTED -> "Unsupported instruction"
-    com.example.tasksync.data.remote.InterpretationStatus.PARTIAL -> "Partial interpretation"
 }

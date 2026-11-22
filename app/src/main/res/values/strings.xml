@@ -1,4 +1,8 @@
 <resources>
     <string name="app_name">TaskSync</string>
-    <string name="widget_description">Quickly add tasks by voice and see your open task list.</string>
+    <string name="widget_description">A week strip and agenda for your TaskSync tasks and connected calendar events.</string>
+    <string name="calendar_widget_label">TaskSync Calendar</string>
+    <string name="calendar_widget_description">See your week, selected day, and upcoming agenda.</string>
+    <string name="voice_widget_label">TaskSync Voice Capture</string>
+    <string name="voice_widget_description">Speak a task, review it, and continue in TaskSync.</string>
 </resources>

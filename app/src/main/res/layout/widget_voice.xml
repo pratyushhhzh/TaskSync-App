@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_voice_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_voice_background"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingStart="12dp"
+    android:paddingEnd="12dp">
+
+    <FrameLayout
+        android:id="@+id/widget_voice_microphone"
+        android:layout_width="52dp"
+        android:layout_height="52dp"
+        android:background="@drawable/widget_voice_mic_circle"
+        android:contentDescription="Speak a task">
+        <ImageView
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:layout_gravity="center"
+            android:contentDescription=""
+            android:src="@drawable/ic_widget_microphone" />
+    </FrameLayout>
+
+    <LinearLayout
+        android:id="@+id/widget_voice_copy"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Speak a task"
+            android:textColor="#F5F6FF"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Say it, review, done"
+            android:textColor="#AEB9E4"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/widget_voice_add"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_marginStart="8dp"
+        android:background="@drawable/widget_voice_add_circle"
+        android:contentDescription="Start voice capture"
+        android:gravity="center"
+        android:text="+"
+        android:textColor="#F5F6FF"
+        android:textSize="28sp"
+        android:textStyle="normal" />
+</LinearLayout>

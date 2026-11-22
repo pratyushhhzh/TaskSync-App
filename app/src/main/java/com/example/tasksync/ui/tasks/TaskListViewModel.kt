@@ -10,6 +10,8 @@ import com.example.tasksync.data.local.entity.SubtaskEntity
 import com.example.tasksync.data.repository.ProjectRepository
 import com.example.tasksync.data.repository.TaskRepository
 import com.example.tasksync.data.calendar.GoogleDeviceCalendar
+import com.example.tasksync.data.calendar.ExternalCalendarEvent
+import java.time.LocalDate
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.SharingStarted
@@ -60,7 +62,9 @@ class TaskListViewModel(application: Application) : AndroidViewModel(application
         reminderEnabled: Boolean = false,
         recurrenceRule: String? = null,
         priority: Int = 4,
-        projectId: String? = null
+        projectId: String? = null,
+        reminderOffsets: List<Int>? = null,
+        customReminderAtMillis: Long? = null,
     ) {
         viewModelScope.launch {
             repository.createTask(
@@ -72,14 +76,16 @@ class TaskListViewModel(application: Application) : AndroidViewModel(application
                 reminderEnabled = reminderEnabled,
                 recurrenceRule = recurrenceRule,
                 priority = priority,
-                projectId = projectId
+                projectId = projectId,
+                reminderOffsets = reminderOffsets,
+                customReminderAtMillis = customReminderAtMillis,
             )
         }
     }
 
-    fun updateTask(task: TaskEntity) {
+    fun updateTask(task: TaskEntity, reminderOffsets: List<Int>? = null, customReminderAtMillis: Long? = null) {
         viewModelScope.launch {
-            repository.updateTask(task)
+            repository.updateTask(task, reminderOffsets, customReminderAtMillis)
         }
     }
 
@@ -103,13 +109,27 @@ class TaskListViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun refreshReminderSchedules() {
+        viewModelScope.launch { repository.refreshReminderSchedules() }
+    }
+
     val connectedGoogleCalendarLabel: String? get() = repository.connectedGoogleCalendarLabel
+    val connectedGoogleCalendarLastSyncMillis: Long? get() = repository.connectedGoogleCalendarLastSyncMillis
+    val connectedGoogleCalendarSyncError: String? get() = repository.connectedGoogleCalendarSyncError
+    val defaultTimedEventDurationMinutes: Int get() = repository.defaultTimedEventDurationMinutes
+
+    fun setDefaultTimedEventDurationMinutes(minutes: Int) = repository.setDefaultTimedEventDurationMinutes(minutes)
 
     suspend fun availableGoogleCalendars(): List<GoogleDeviceCalendar> = repository.availableGoogleCalendars()
 
+    suspend fun calendarEventsForDate(date: LocalDate, taskSyncEventIds: Set<Long>): List<ExternalCalendarEvent> =
+        repository.calendarEventsForDate(date, taskSyncEventIds)
+
     suspend fun connectGoogleCalendar(calendar: GoogleDeviceCalendar): List<String> = repository.connectGoogleCalendar(calendar)
 
-    suspend fun disconnectGoogleCalendar(): List<String> = repository.disconnectGoogleCalendar()
+    suspend fun disconnectGoogleCalendar(removeOwnedEvents: Boolean = true): List<String> = repository.disconnectGoogleCalendar(removeOwnedEvents)
+
+    suspend fun resyncSelectedGoogleCalendar(): List<String> = repository.resyncSelectedGoogleCalendar()
 
     fun createProject(name: String, description: String? = null, deadlineDate: String? = null) {
         if (name.isBlank()) return

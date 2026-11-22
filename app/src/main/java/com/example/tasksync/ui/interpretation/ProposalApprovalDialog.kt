@@ -13,23 +13,38 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -37,9 +52,13 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TimePicker
+import androidx.compose.material3.Surface
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.outlined.AccessTime
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.runtime.Composable
@@ -52,8 +71,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.tasksync.data.interpretation.MatchQuality
@@ -72,6 +94,7 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProposalApprovalDialog(
     response: InterpretationResponse,
@@ -95,54 +118,93 @@ fun ProposalApprovalDialog(
             message.contains("notification", ignoreCase = true) || message.contains("channel", ignoreCase = true)
         } == true
     }
+    LaunchedEffect(state.finished) {
+        if (state.finished) onDismiss()
+    }
 
-    AlertDialog(
+    if (!state.finished) Dialog(
         onDismissRequest = { if (!state.applying) onDismiss() },
-        title = { Text("Review proposed changes") },
-        text = {
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.68f)), contentAlignment = Alignment.BottomCenter) {
+            AnimatedVisibility(
+                visible = true,
+                enter = fadeIn(tween(380)) + slideInVertically(tween(550)) { it / 7 },
+                modifier = Modifier.align(Alignment.BottomCenter),
+            ) {
+            Surface(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 12.dp).fillMaxHeight(0.84f).heightIn(max = 780.dp),
+                shape = RoundedCornerShape(36.dp),
+                color = Color(0xFF131A48),
+                contentColor = Color(0xFFF2F4FA),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.13f)),
+                shadowElevation = 24.dp,
+            ) {
+        Column(Modifier.fillMaxSize().padding(horizontal = 20.dp).padding(bottom = 16.dp)) {
+            Surface(Modifier.align(Alignment.CenterHorizontally).padding(top = 10.dp, bottom = 12.dp).size(width = 38.dp, height = 4.dp), color = Color.White.copy(alpha = 0.28f), shape = RoundedCornerShape(4.dp)) {}
+            Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("${response.operations.size} changes found", style = MaterialTheme.typography.titleLarge, color = Color(0xFFF2F4FA))
+                    Text("${(pagerState.currentPage + 1).coerceAtMost(state.rows.size.coerceAtLeast(1))} of ${state.rows.size}", style = MaterialTheme.typography.labelMedium, color = Color(0xFFA9B3D6))
+                }
+                IconButton(onClick = onDismiss, enabled = !state.applying) {
+                    Icon(Icons.Default.Close, contentDescription = "Close proposal review", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            if (response.operations.any { it is DeleteProposal }) {
+                Surface(Modifier.fillMaxWidth().padding(bottom = 10.dp), shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.error.copy(alpha = 0.1f), border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.2f))) {
+                    Text("${response.operations.count { it is DeleteProposal }} permanently deletes a task", Modifier.padding(horizontal = 12.dp, vertical = 9.dp), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
+                }
+            }
             Column(
-                Modifier.fillMaxWidth().heightIn(max = 620.dp).verticalScroll(rememberScrollState()),
+                Modifier.weight(1f, fill = false).fillMaxWidth().verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Text("Confirmed transcript", style = MaterialTheme.typography.titleSmall)
-                Text(transcript, style = MaterialTheme.typography.bodySmall)
-                Text("${response.status.name.lowercase().replace('_', ' ')} · ${response.operations.size} operation(s)", style = MaterialTheme.typography.labelMedium)
+                Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), color = Color(0xFF080B13).copy(alpha = 0.55f), border = BorderStroke(1.dp, Color.White.copy(alpha = 0.09f))) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    Text("ORIGINAL REQUEST", style = MaterialTheme.typography.labelMedium, color = Color(0xFFBFD0FF), letterSpacing = 0.8f.sp)
+                        Text(transcript, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                Text("${response.status.name.lowercase().replace('_', ' ')} · ${response.operations.size} operation(s)", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 state.loadError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 response.clarifications.forEach { item ->
-                    Card(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                            Text("Needs clarification", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
-                            Text("${item.sourceText}: ${item.question}", style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
+                    ReviewNoticeCard(title = "Needs clarification", text = "${item.sourceText}: ${item.question}", danger = true)
                 }
                 response.unsupportedItems.forEachIndexed { index, item ->
                     if (index in dismissedUnsupported) return@forEachIndexed
-                    Card(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)), modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text("Not interpreted", style = MaterialTheme.typography.titleSmall)
-                            Text("${item.sourceText}: ${item.reason}", style = MaterialTheme.typography.bodySmall)
+                            Text("${item.sourceText}: ${item.reason}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             TextButton(onClick = { dismissedUnsupported = dismissedUnsupported + index }) { Text("Dismiss notice") }
                         }
                     }
                 }
                 if (state.loading) {
-                    CircularProgressIndicator()
+                    Row(Modifier.fillMaxWidth().padding(20.dp), horizontalArrangement = Arrangement.Center) { CircularProgressIndicator() }
                 } else if (state.rows.isEmpty()) {
-                    Text(state.loadError ?: "There are no task changes to apply.")
+                    Text(state.loadError ?: "There are no task changes to apply.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else {
-                    HorizontalPager(
-                        state = pagerState,
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 250.dp, max = 400.dp),
-                    ) { page ->
-                        ProposalReviewCard(state.rows[page], viewModel)
+                    Box(Modifier.fillMaxWidth().height(410.dp)) {
+                        if (state.rows.size > 2) Surface(
+                            Modifier.fillMaxWidth().padding(horizontal = 28.dp).offset(y = 16.dp).height(370.dp),
+                            shape = RoundedCornerShape(26.dp), color = Color(0xFF10173D), border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
+                        ) { }
+                        if (state.rows.size > 1) Surface(
+                            Modifier.fillMaxWidth().padding(horizontal = 14.dp).offset(y = 8.dp).height(378.dp),
+                            shape = RoundedCornerShape(27.dp), color = Color(0xFF121A42), border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
+                        ) { }
+                        HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
+                            ProposalReviewCard(state.rows[page], viewModel)
+                        }
                     }
-                    Text("${pagerState.currentPage + 1} of ${state.rows.size} · Swipe to review", modifier = Modifier.align(Alignment.CenterHorizontally), style = MaterialTheme.typography.labelMedium)
+                    Text("Swipe to review", modifier = Modifier.align(Alignment.CenterHorizontally), style = MaterialTheme.typography.labelMedium, color = Color(0xFFA9B3D6))
                 }
                 if (unresolvedCount > 0) {
                     Text("Resolve or exclude $unresolvedCount selected proposal(s) before applying.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 } else if (approvedCount == 0 && !state.loading) {
-                    Text("Select at least one proposal to apply.", style = MaterialTheme.typography.bodySmall)
+                    Text("Select at least one proposal to apply.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (state.applying) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -150,7 +212,9 @@ fun ProposalApprovalDialog(
                         Text("Applying approved changes…")
                     }
                 }
-                state.summary?.let { Text(it, style = MaterialTheme.typography.titleSmall) }
+                if (!state.finished) {
+                    state.summary?.let { Text(it, style = MaterialTheme.typography.titleSmall) }
+                }
                 if (hasReminderOutcomeNeedingSettings) {
                     TextButton(onClick = {
                         val intent = Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
@@ -160,27 +224,38 @@ fun ProposalApprovalDialog(
                     }) { Text("Open reminder notification settings") }
                 }
             }
-        },
-        confirmButton = {
             Button(
                 onClick = {
-                    if (state.finished) {
-                        onDismiss()
-                    } else {
-                        val needsPermission = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                            included.any { it.canApply && it.reminderRequested && it.dueDateInput.isNotBlank() && it.dueTimeInput.isNotBlank() } &&
-                            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-                        if (needsPermission) notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        else viewModel.applySelected()
-                    }
+                    val needsPermission = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                        included.any { it.canApply && it.reminderRequested && it.dueDateInput.isNotBlank() && it.dueTimeInput.isNotBlank() } &&
+                        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                    if (needsPermission) notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    else viewModel.applySelected()
                 },
-                enabled = state.finished || (approvedCount > 0 && unresolvedCount == 0 && !state.applying && !state.loading),
-            ) { Text(if (state.finished) "Done" else if (state.applying) "Applying…" else "Confirm & Apply ($approvedCount)") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !state.applying) { Text(if (state.finished) "Done" else "Close") }
-        },
-    )
+                modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                shape = RoundedCornerShape(28.dp),
+                enabled = approvedCount > 0 && unresolvedCount == 0 && !state.applying && !state.loading,
+            ) { Text(if (state.applying) "Applying…" else "Confirm & Apply $approvedCount") }
+            TextButton(onClick = onDismiss, enabled = !state.applying, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Cancel") }
+        }
+            }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReviewNoticeCard(title: String, text: String, danger: Boolean) {
+    Card(
+        Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = if (danger) MaterialTheme.colorScheme.error.copy(alpha = 0.1f) else MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, (if (danger) MaterialTheme.colorScheme.error else Color.White).copy(alpha = 0.2f)),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall, color = if (danger) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onBackground)
+            Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
 }
 
 @Composable
@@ -209,7 +284,12 @@ private fun ProposalReviewCard(row: ReviewProposal, viewModel: ProposalReviewVie
     }
     val filteredMatches = remember(row.matches) { row.matches.take(8) }
 
-    Card(Modifier.fillMaxWidth()) {
+    Card(
+        Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(28.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF141B44)),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.18f)),
+    ) {
         Column(Modifier.padding(12.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(7.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(checked = row.selected, onCheckedChange = { viewModel.setSelected(row.operationId, it) })
@@ -255,8 +335,6 @@ private fun ProposalReviewCard(row: ReviewProposal, viewModel: ProposalReviewVie
             }
             originalDatePhrase?.let { Text("Original date phrase: $it", style = MaterialTheme.typography.bodySmall) }
             originalTimePhrase?.let { Text("Original time phrase: $it", style = MaterialTheme.typography.bodySmall) }
-            originalDatePhrase?.let { Text("Spoken date phrase: $it", style = MaterialTheme.typography.bodySmall) }
-            originalTimePhrase?.let { Text("Spoken time phrase: $it", style = MaterialTheme.typography.bodySmall) }
             row.scheduleWarnings.forEach { Text(it, color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.bodySmall) }
             row.issues.forEach { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
             row.outcome?.let { result ->
@@ -297,21 +375,14 @@ private fun DateField(row: ReviewProposal, viewModel: ProposalReviewViewModel) {
 
 @Composable
 private fun PriorityField(row: ReviewProposal, viewModel: ProposalReviewViewModel, allowKeep: Boolean) {
-    var expanded by remember(row.operationId) { mutableStateOf(false) }
-    val label = when (row.selectedPriority) {
-        1 -> "High"
-        2 -> "Medium"
-        3 -> "Low"
-        4 -> "No priority"
-        else -> "Keep existing priority"
-    }
-    Box {
-        OutlinedButton(onClick = { expanded = true }) { Text("Priority: $label") }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            if (allowKeep) DropdownMenuItem(text = { Text("Keep existing") }, onClick = { expanded = false; viewModel.selectPriority(row.operationId, null) })
-            listOf(1 to "High", 2 to "Medium", 3 to "Low", 4 to "No priority").forEach { (value, text) ->
-                DropdownMenuItem(text = { Text(text) }, onClick = { expanded = false; viewModel.selectPriority(row.operationId, value) })
-            }
+    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (allowKeep) FilterChip(selected = row.selectedPriority == null, onClick = { viewModel.selectPriority(row.operationId, null) }, label = { Text("Keep") })
+        listOf(3 to "Low", 2 to "Medium", 1 to "High").forEach { (value, text) ->
+            FilterChip(
+                selected = row.selectedPriority == value,
+                onClick = { viewModel.selectPriority(row.operationId, value) },
+                label = { Text(text) },
+            )
         }
     }
 }

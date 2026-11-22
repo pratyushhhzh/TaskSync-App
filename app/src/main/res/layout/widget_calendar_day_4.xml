@@ -1,0 +1,4 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/widget_day_cell_4" style="@style/TaskSyncCalendarDayCell">
+    <TextView android:id="@+id/widget_day_number_4" style="@style/TaskSyncCalendarDayNumber" android:text="14" />
+    <View android:id="@+id/widget_day_dot_4" style="@style/TaskSyncCalendarDayDot" android:visibility="visible" />
+</LinearLayout>
